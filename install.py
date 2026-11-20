@@ -15,14 +15,23 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from datetime import datetime
+from urllib import request
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
 LIMIT = 4_000_000
+LAUNCHER_NAME = "roastline.cmd" if os.name == "nt" else "roastline"
+BUNDLE_FILES = (
+    "install.py", "config.default.json", "skills/roastline/SKILL.md",
+    "src/roastline.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
+    "tests/fixtures/statusline_input_sample.json",
+)
 BANNER = r"""
          (  )  (  )
           ) (   ) (
@@ -235,27 +244,30 @@ def shell_command(shell, *parts):
     return " ".join(shlex.quote(word) for word in words)
 
 
-def prompt_tone(non_interactive):
+def prompt_tone(non_interactive, default="sfw"):
     if non_interactive:
-        return "sfw"
+        return default
     stream = sys.stdin if sys.stdin.isatty() else None
     try:
         if stream is None:
             stream = open("CONIN$" if os.name == "nt" else "/dev/tty", encoding="utf-8")
     except OSError:
-        return "sfw"
+        return default
     try:
         if os.name == "posix":
             try:
                 if os.tcgetpgrp(stream.fileno()) != os.getpgrp():
-                    return "sfw"  # a background job must not stop waiting for terminal input
+                    return default  # a background job must not stop waiting for terminal input
             except OSError:
-                return "sfw"
+                return default
         print("  Choose how hot to make it: [1] SFW (clean)  [2] NSFW (strong language)", file=sys.stderr)
         while True:
-            print("  Roast level [1]: ", end="", file=sys.stderr, flush=True)
+            print("  Roast level [{}]: ".format("1" if default == "sfw" else "2"),
+                  end="", file=sys.stderr, flush=True)
             answer = stream.readline().strip().lower()
-            if answer in ("", "1", "sfw"):
+            if not answer:
+                return default
+            if answer in ("1", "sfw"):
                 return "sfw"
             if answer in ("2", "nsfw"):
                 return "nsfw"
@@ -279,8 +291,9 @@ def load_runtime(path):
 
 
 class Home:
-    def __init__(self):
-        self.config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser().resolve()
+    def __init__(self, config_dir=None):
+        config = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"
+        self.config = Path(config).expanduser().resolve()
         self.settings = self.config / "settings.json"
         self.root = self.config / "roastline"
         self.releases = self.root / "releases"
@@ -337,6 +350,81 @@ class Home:
         if raw_file(self.settings) != old:
             raise InstallError("Claude settings changed during installation. Try again.")
         write_atomic(self.settings, new, file_mode(self.settings))
+
+    def launcher_path(self, state):
+        entry = launcher_receipt(state)
+        if entry:
+            return entry[0]
+        user_home = Path.home().resolve()
+        # Alternate Claude profiles (including test sandboxes) must not touch
+        # the normal user's global launcher.
+        base = (user_home / ".local/bin" if self.config == (user_home / ".claude").resolve()
+                else self.config / "roastline-bin")
+        return base.resolve() / LAUNCHER_NAME
+
+
+def launcher_receipt(state):
+    entry = (state or {}).get("launcher")
+    if not isinstance(entry, dict):
+        return None
+    path, digest = entry.get("path"), entry.get("sha")
+    if isinstance(path, str) and isinstance(digest, str):
+        target = Path(path)
+        if target.is_absolute() and target.name == LAUNCHER_NAME and re.fullmatch(r"[a-f0-9]{64}", digest):
+            return target, digest
+    return None
+
+
+def launcher_body(home):
+    helper = home.root / "install.py"
+    if os.name == "nt":
+        python, script = (str(item).replace("%", "%%") for item in (python_path(), helper))
+        return ('@echo off\r\n'
+                'rem Launcher managed by Roastline\r\n'
+                'setlocal DisableDelayedExpansion\r\n'
+                '"{}" -I "{}" %*\r\n'
+                'exit /b %errorlevel%\r\n'.format(python, script)).encode("utf-8")
+    return ("#!/bin/sh\n"
+            "# Launcher managed by Roastline\n"
+            "exec {} -I {} \"$@\"\n".format(
+                *(shlex.quote(str(item)) for item in (python_path(), helper)))).encode("utf-8")
+
+
+def write_launcher(home, state, save):
+    path = home.launcher_path(state)
+    if path.is_symlink():
+        message("NOTE", "Kept the existing launcher at {}".format(path))
+        return None
+    receipt = launcher_receipt(state)
+    try:
+        current = raw_file(path, 16_384)
+    except InstallError:
+        message("NOTE", "Kept the existing item at {}".format(path))
+        return None
+    if current is not None and not (receipt and sha(current) == receipt[1]):
+        message("NOTE", "Kept the existing launcher at {}".format(path))
+        return None
+    private_dir(path.parent)
+    body = launcher_body(home)
+    if current != body or not os.access(path, os.X_OK):
+        save(path, body, new_mode=0o755)
+    return {"path": str(path), "sha": sha(body)}
+
+
+def remove_launcher(state):
+    entry = launcher_receipt(state)
+    if not entry:
+        return
+    path, digest = entry
+    try:
+        raw = raw_file(path, 16_384)
+    except InstallError:
+        raw = None
+    if raw is not None and sha(raw) == digest:
+        path.unlink()
+        message("OK", "Removed the roastline command")
+    elif path.exists() or path.is_symlink():
+        message("NOTE", "Kept the user-modified launcher at {}".format(path))
 
 
 def original_options(settings, state):
@@ -416,7 +504,10 @@ def install(home, args):
     with config_lock(home.config):
         old, settings, state, (present, original) = preflight(home)
         config = runtime.config_from(home.options if home.options.exists() else HERE / "config.default.json")
-        tone = args.tone or (config["tone"] if home.options.exists() else prompt_tone(args.non_interactive))
+        if args.tone is True or (args.tone is None and not home.options.exists()):
+            tone = prompt_tone(args.non_interactive, default=config["tone"])
+        else:
+            tone = args.tone or config["tone"]
         config["tone"] = tone
         message("OK", "Tone: {}".format(tone.upper()))
         private_dir(home.root)
@@ -443,11 +534,11 @@ def install(home, args):
         with ExitStack() as rollback:
             rollback.callback(shutil.rmtree, release)
 
-            def save(path, contents):
+            def save(path, contents, new_mode=None):
                 current = raw_file(path)
                 mode = file_mode(path)
                 rollback.callback(write_atomic, path, current, mode)
-                write_atomic(path, contents, mode)
+                write_atomic(path, contents, mode if new_mode is None else new_mode)
 
             if not state:
                 save(home.backups / backup_name, old if old is not None else b"{}\n")
@@ -459,18 +550,28 @@ def install(home, args):
             save(home.skill, skill)
             save(home.root / "install.py", Path(__file__).read_bytes())
             save(home.options, json_bytes(config))
+            next_state["launcher"] = write_launcher(home, state, save)
             save(home.state, json_bytes(next_state))
             home.change_settings(old, settings_bytes({**settings, "statusLine": applied}, old))
             rollback.pop_all()
     message("OK", "Global /roastline skill installed")
     message("OK", "Startup check passed; {}".format("existing command preserved" if present else
                                                     "Roastline statusline enabled"))
+    helper_cmd = shell_command(shell, python_path(), "-I", home.root / "install.py")
+    launcher = launcher_receipt(next_state)
+    if launcher:
+        message("OK", "Terminal command installed: {}".format(launcher[0]))
+        on_path = shutil.which(LAUNCHER_NAME)
+        if not on_path or Path(on_path).resolve() != launcher[0]:
+            message("NOTE", "Use the full command path above or add {} to PATH.".format(launcher[0].parent))
+            helper_cmd = shell_command(shell, launcher[0])
+        else:
+            helper_cmd = "roastline"
     if present and "refreshInterval" not in applied:
         message("NOTE", "Kept event-driven refresh. Pass --refresh 15 at install for idle-time updates.")
     if not present:
         message("NOTE", "Claude adds a custom row and may hide some built-in shortcut hints until uninstall.")
-    print("\n  Try /roastline in Claude Code. Uninstall with:\n  {}".format(
-        shell_command(shell, python_path(), "-I", home.root / "install.py", "--uninstall")), flush=True)
+    print("\n  Try /roastline in Claude Code. Terminal options:\n  {} --help".format(helper_cmd), flush=True)
 
 
 def uninstall(home, args):
@@ -524,6 +625,7 @@ def uninstall(home, args):
             message("OK", "Removed the global skill")
         elif skill is not None or home.skill.is_symlink():
             message("NOTE", "Kept the user-modified skill")
+        remove_launcher(state)
         write_atomic(home.state, None)
         if args.purge:
             shutil.rmtree(home.root)
@@ -586,13 +688,97 @@ def manage(home, args):
             write_atomic(home.personal, json_bytes(bank))
             message("OK", "Saved {} {} roast(s) for {}".format(len(new), tone.upper(), trigger))
             return
-        if args.tone:
+        before = dict(options)
+        if args.tone is True:
+            options["tone"] = prompt_tone(args.non_interactive, default=options["tone"])
+        elif args.tone:
             options["tone"] = args.tone
         if args.pause or args.resume:
             options["show_roasts"] = args.resume
-        write_atomic(home.options, json_bytes(options))
+        if options != before:
+            write_atomic(home.options, json_bytes(options))
         message("OK", "Roasts {} ({})".format("enabled" if options["show_roasts"] else "paused",
                                              options["tone"].upper()))
+
+
+def fetch(url, limit):
+    req = request.Request(url, headers={"User-Agent": "Roastline/" + VERSION})
+    try:
+        with request.urlopen(req, timeout=10) as response:
+            data = response.read(limit + 1)
+    except OSError:
+        raise InstallError("Could not reach the Roastline repository. Your installation was not changed.")
+    if len(data) > limit:
+        raise InstallError("Update download is larger than expected. Your installation was not changed.")
+    return data
+
+
+def version_tuple(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,4}){2}", value):
+        raise InstallError("Invalid Roastline version in the update metadata.")
+    return tuple(map(int, value.split(".")))
+
+
+def stage_update(archive_path, folder, current_version):
+    with tarfile.open(archive_path, "r:gz") as archive:
+        top = archive.next()
+        if top is None or not top.isdir():
+            raise InstallError("Invalid update archive: missing root directory.")
+
+        def contents(name):
+            item = archive.getmember(top.name + "/" + name)
+            if item.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or item.size > 256_000:
+                raise InstallError("Invalid update archive: expected a small, regular file.")
+            with archive.extractfile(item) as stream:
+                return stream.read()
+
+        versions = re.findall(rb"(?m)^VERSION=([0-9]+(?:\.[0-9]+){2})\r?$", contents("install.sh"))
+        if len(versions) != 1:
+            raise InstallError("The update archive has no valid version marker.")
+        latest = versions[0].decode("ascii")
+        if version_tuple(latest) <= version_tuple(current_version):
+            return latest, None
+        for name in BUNDLE_FILES:
+            target = folder / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents(name))
+    return latest, folder / "install.py"
+
+
+def update(home, state):
+    if not state:
+        raise InstallError("Roastline is not installed. Run the installer first.")
+    preflight(home)
+    current = state.get("version", VERSION)
+    message("..", "Checking upstream ({}:main); installed v{}".format(REPO, current))
+    # Resolve main first, then fetch exactly that commit rather than a moving
+    # archive URL. Only the explicit --update action needs network access.
+    raw = fetch("https://api.github.com/repos/{}/git/ref/heads/main".format(REPO), 32_000)
+    ref = object_json(raw, "GitHub update response").get("object")
+    commit = ref.get("sha") if isinstance(ref, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise InstallError("GitHub did not return a valid Roastline commit.")
+    with tempfile.TemporaryDirectory(prefix="roastline-update-") as scratch:
+        folder = Path(scratch)
+        path = folder / "update.tar.gz"
+        path.write_bytes(fetch("https://codeload.github.com/{}/tar.gz/{}".format(REPO, commit), 8_000_000))
+        try:
+            latest, installer = stage_update(path, folder, current)
+        except (OSError, EOFError, KeyError, tarfile.TarError) as exc:
+            raise InstallError("Invalid update archive. Your installation was not changed.") from exc
+        if installer is None:
+            if latest == current:
+                message("OK", "Already up to date (v{})".format(current))
+            else:
+                message("OK", "Installed v{} is newer than upstream v{}; no downgrade applied".format(current, latest))
+            return
+        message("..", "Installing v{} from {} (keeping your settings)".format(latest, commit[:8]))
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(home.config), "ROASTLINE_BOOTSTRAPPED": "1"}
+        result = subprocess.run([str(python_path()), "-I", str(installer), "--non-interactive"],
+                                env=env, cwd=folder, stdin=subprocess.DEVNULL, timeout=60)
+        if result.returncode:
+            raise InstallError("Update did not complete. See the installer output above.")
+        message("OK", "Updated Roastline to v{}".format(latest))
 
 
 def positive(value):
@@ -601,39 +787,60 @@ def positive(value):
     return int(value)
 
 
+def tone_arg(value):
+    if value.lower() not in TONES:
+        raise argparse.ArgumentTypeError("tone must be sfw or nsfw")
+    return value.lower()
+
+
 def main(argv=None):
     if sys.version_info < (3, 8):
         print("Roastline needs Python 3.8 or newer.", file=sys.stderr)
         return 1
-    parser = argparse.ArgumentParser(description="Install or manage Roastline for Claude Code")
+    bundle = (HERE / "src/roastline.py").is_file()
+    parser = argparse.ArgumentParser(
+        prog=None if bundle else "roastline", description="Install or manage Roastline for Claude Code",
+        epilog="Examples: roastline --tone nsfw   |   roastline --update   |   roastline --uninstall",
+    )
     action = parser.add_mutually_exclusive_group()
-    action.add_argument("--status", action="store_true")
-    action.add_argument("--uninstall", action="store_true")
-    action.add_argument("--pause", action="store_true")
-    action.add_argument("--resume", action="store_true")
+    action.add_argument("--status", action="store_true", help="show the installed version, tone, and backup")
+    action.add_argument("--update", action="store_true", help="install a newer version from GitHub")
+    action.add_argument("--uninstall", action="store_true", help="restore the original statusline")
+    action.add_argument("--pause", action="store_true", help="hide roasts without removing the statusline")
+    action.add_argument("--resume", action="store_true", help="show roasts again")
     action.add_argument("--add-roasts", metavar="TRIGGER", help="read 2–5 approved jokes as JSON from stdin")
-    action.add_argument("--triggers", action="store_true")
-    parser.add_argument("--tone", choices=TONES)
-    parser.add_argument("--non-interactive", action="store_true")
-    parser.add_argument("--refresh", type=positive, metavar="SECONDS")
-    parser.add_argument("--dry-run", action="store_true")
+    action.add_argument("--triggers", action="store_true", help="list the available roast triggers")
+    parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
+                        help="open the tone picker or select sfw/nsfw directly")
+    parser.add_argument("--non-interactive", action="store_true", help="do not prompt")
+    if bundle:
+        parser.add_argument("--refresh", type=positive, metavar="SECONDS",
+                            help="set the install-time refresh interval")
+    else:
+        parser.set_defaults(refresh=None)
+    parser.add_argument("--dry-run", action="store_true", help="preview install or uninstall without writing")
     parser.add_argument("--purge", action="store_true", help="remove saved data and backups on uninstall")
     parser.add_argument("--version", action="version", version="Roastline " + VERSION)
     args = parser.parse_args(argv)
     if args.purge and not args.uninstall:
         parser.error("--purge requires --uninstall")
     manage_action = args.pause or args.resume or args.add_roasts
-    bundle = (HERE / "src/roastline.py").is_file()
-    if args.dry_run and (args.status or args.triggers or manage_action or (not bundle and not args.uninstall)):
+    if args.dry_run and (args.status or args.triggers or args.update or manage_action
+                         or (not bundle and not args.uninstall)):
         parser.error("--dry-run is for install and uninstall only")
-    if args.refresh and (not bundle or args.uninstall or args.status or args.triggers or manage_action):
+    if args.refresh and (not bundle or args.uninstall or args.status or args.triggers or args.update or manage_action):
         parser.error("--refresh is only set from the installer")
-    if args.tone and (args.status or args.triggers or args.uninstall or args.add_roasts):
+    if args.tone and (args.status or args.triggers or args.uninstall or args.update or args.add_roasts):
         parser.error("--tone is for install, tone switching, pause or resume")
-    home = Home()
+    # An installed helper/launcher belongs to its own profile. Do not let a
+    # different session's CLAUDE_CONFIG_DIR redirect --uninstall or --update.
+    home = Home(config_dir=None if bundle else HERE.parent)
     try:
         if args.status:
             status(home)
+        elif args.update:
+            home.check_paths()
+            update(home, home.read_state())
         elif args.uninstall:
             uninstall(home, args)
         elif args.triggers:

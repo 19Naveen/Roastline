@@ -8,6 +8,8 @@ Never edit Claude's `settings.json` by hand or replace an existing statusline sc
   run `bash install.sh --non-interactive --tone sfw` or the explicitly requested
   `--tone nsfw`. If not possible to ask, use SFW.
 - Use `python3 -I install.py --dry-run` for a read-only install preview.
-- For status or uninstall, call `python3 -I install.py --status` or `--uninstall`.
+- To manage an installation, use `roastline --help`, `--status`, `--tone`,
+  `--update`, or `--uninstall`. If the launcher isn't on `PATH`, call
+  `python3 -I install.py` with the corresponding flag from this checkout.
   Do not purge backups unless the user expressly requests it.
 - Follow the installer output. Do not try to bypass project or managed settings.

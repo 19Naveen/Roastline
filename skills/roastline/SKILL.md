@@ -1,7 +1,7 @@
 ---
 name: roastline
-description: Use when the user asks for personalized statusline roasts, wants to add or preview jokes based on their coding habits, or wants to check, pause, resume, or change the tone of Roastline. Do not turn routine coding requests into roasts unless the user asks.
-argument-hint: "[add | status | pause | resume | sfw | nsfw]"
+description: Use when the user asks for personalized statusline roasts, wants to add or preview jokes based on their coding habits, or wants to check, pause, resume, update, or change the tone of Roastline. Do not turn routine coding requests into roasts unless the user asks.
+argument-hint: "[add | status | pause | resume | sfw | nsfw | update]"
 ---
 
 # Roastline
@@ -12,15 +12,17 @@ runs. Use this skill when the user wants jokes that sound like they were written
 
 ## Manage the installation
 
-The installed helper is `<Claude config dir>/roastline/install.py`. The config directory is
-`CLAUDE_CONFIG_DIR` when set, or `~/.claude` otherwise. Use Python 3.8+ and call it with `-I`.
-For example, in Bash:
+Use the terminal `roastline` command when it is available. For an alternate `CLAUDE_CONFIG_DIR`
+or if the command isn't on `PATH`, call `<Claude config dir>/roastline/install.py` directly
+with Python 3.8+ and `-I`. For example, in Bash:
 
 ```bash
 python3 -I "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/roastline/install.py" --status
 ```
 
 - `status`, `pause`, and `resume` mean `--status`, `--pause`, and `--resume`.
+- Use `--help` to see the terminal commands. Use `--update` only when the user
+  explicitly requests an update; it downloads from the Roastline GitHub repository.
 - An explicit `sfw` or `nsfw` request means `--tone sfw` or `--tone nsfw`. Never infer
   consent for the NSFW setting from the user's language.
 - Never edit Claude settings, the package, or the personal roast bank directly. If the

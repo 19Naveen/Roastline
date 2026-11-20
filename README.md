@@ -58,17 +58,35 @@ any other agent to run an installer on your behalf. For a PowerShell terminal,
 use a local checkout and run `py -3 -I install.py`. The Python entry point also
 supports `--dry-run` for a read-only preview.
 
-## Pause, switch tones, or uninstall
-
-In Bash, set `helper` to the installed manager:
+## Use the `roastline` command
 
 ```bash
-helper="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/roastline/install.py"
-python3 -I "$helper" --status
-python3 -I "$helper" --pause
-python3 -I "$helper" --resume
-python3 -I "$helper" --tone sfw       # or nsfw
-python3 -I "$helper" --uninstall
+roastline --help          # list the available options
+roastline --status        # show the installed version, tone, and backup
+roastline --tone          # pick a tone interactively
+roastline --tone sfw      # or nsfw; no prompt
+roastline --pause
+roastline --resume
+roastline --update        # install a newer version from GitHub
+roastline --uninstall
+```
+
+`--update` checks the version on the project's `main` branch, downloads the exact
+commit it checked, and runs the same installer. It preserves your original
+statusline backup, tone, pause setting, and saved jokes. It does not downgrade.
+If you installed v1.0.0 before the terminal command existed, rerun the curl
+installer once to get it.
+
+The command goes into `~/.local/bin` (`roastline.cmd` on native Windows). An
+alternate `CLAUDE_CONFIG_DIR` gets its own launcher under `roastline-bin` in
+that config directory. If the directory isn't on `PATH`, use the full path printed
+during install or add that directory to `PATH`. Install never edits your shell
+profile or overwrites a different executable named `roastline`.
+
+You can also call the installed helper directly if the launcher isn't available:
+
+```bash
+python3 -I "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/roastline/install.py" --help
 ```
 
 Uninstall restores the previous `statusLine` setting if Roastline still owns it.

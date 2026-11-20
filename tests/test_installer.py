@@ -49,16 +49,92 @@ class InstallerTests(unittest.TestCase):
     def install(self, *args):
         return self.call("--non-interactive", *args)
 
+    def archive(self, fixture, extra=False):
+        name = "Roastline-" + installer.VERSION
+        with tarfile.open(fixture, "w:gz") as archive:
+            top = tarfile.TarInfo(name)
+            top.type = tarfile.DIRTYPE
+            archive.addfile(top)
+            for filename in ("install.sh", *installer.BUNDLE_FILES):
+                archive.add(ROOT / filename, arcname=name + "/" + filename)
+            if extra:
+                bonus = tarfile.TarInfo(name + "/../../attempted-side-effect")
+                bonus.size = 4
+                archive.addfile(bonus, io.BytesIO(b"oops"))
+
+    @property
+    def launcher(self):
+        return self.config / "roastline-bin" / installer.LAUNCHER_NAME
+
     def test_fresh_install_and_uninstall_remove_only_new_setting(self):
         self.install()
         self.assertIn("statusLine", self.config_value())
+        self.assertTrue(self.launcher.is_file())
+        self.assertFalse((self.directory / ".local/bin" / installer.LAUNCHER_NAME).exists())
         self.assertIn("name: roastline", self.skill.read_text(encoding="utf-8"))
         self.assertEqual(json.loads((self.home / "config.json").read_bytes())["tone"], "sfw")
         self.assertTrue(self.call("--status", helper=True).stdout)
         self.call("--uninstall", helper=True)
         self.assertFalse(self.settings.exists())
+        self.assertFalse(self.launcher.exists())
         self.assertFalse(self.skill.exists())
         self.assertTrue(any((self.home / "backup").iterdir()))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX launcher")
+    def test_normal_profile_installs_a_command_callable_from_path(self):
+        config = self.directory / ".claude"
+        config.mkdir()
+        self.env["CLAUDE_CONFIG_DIR"] = str(config)
+        bin_dir = self.directory / ".local/bin"
+        self.env["PATH"] = str(bin_dir) + os.pathsep + self.env["PATH"]
+        self.install()
+        launcher = bin_dir / "roastline"
+        self.assertTrue(os.access(launcher, os.X_OK))
+
+        def command(*flags):
+            result = subprocess.run(["roastline", *flags], cwd=self.directory, env=self.env,
+                                    capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+            return result.stdout
+
+        output = command("--help")
+        self.assertIn(b"usage: roastline", output)
+        for flag in (b"--tone", b"--update", b"--uninstall"):
+            self.assertIn(flag, output)
+        command("--tone", "nsfw")
+        self.assertIn(b"NSFW", command("--status"))
+        self.assertIn(b"NSFW", command("--tone", "--non-interactive"))
+        command("--uninstall")
+        self.assertFalse(launcher.exists())
+        self.assertFalse((config / "settings.json").exists())
+
+    def test_unowned_launcher_is_not_replaced_or_removed(self):
+        self.launcher.parent.mkdir(parents=True)
+        custom = b"existing tool with the same name"
+        self.launcher.write_bytes(custom)
+        self.install()
+        self.assertEqual(self.launcher.read_bytes(), custom)
+        self.call("--uninstall", helper=True)
+        self.assertEqual(self.launcher.read_bytes(), custom)
+
+    def test_modified_launcher_is_left_untouched_on_uninstall(self):
+        self.install()
+        custom = b"locally modified launcher"
+        self.launcher.write_bytes(custom)
+        self.call("--uninstall", "--purge", helper=True)
+        self.assertEqual(self.launcher.read_bytes(), custom)
+
+    def test_installed_helper_cannot_uninstall_a_different_profile(self):
+        self.install()
+        alternate = self.directory / "another config"
+        alternate.mkdir()
+        other_settings = alternate / "settings.json"
+        prior = b'{"statusLine":{"type":"command","command":"echo somebody else"}}'
+        other_settings.write_bytes(prior)
+        self.env["CLAUDE_CONFIG_DIR"] = str(alternate)
+        self.call("--uninstall", helper=True)
+        self.assertFalse(self.settings.exists())
+        self.assertEqual(other_settings.read_bytes(), prior)
 
     def test_reinstall_keeps_first_backup_tone_and_original_bytes(self):
         original = b'{\r\n\t"statusLine": {"type":"command","padding":3,"command":"echo custom"},\r\n\t"a":25\r\n}\r\n'
@@ -151,6 +227,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.settings.read_bytes(), original)
         self.assertFalse(self.skill.exists())
+        self.assertFalse(self.launcher.exists())
         self.assertFalse((self.home / "state.json").exists())
         for path in (self.home / "releases", self.home / "backup"):
             self.assertEqual(list(path.iterdir()), [])
@@ -181,6 +258,62 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(b"paused", self.call("--status", helper=True).stdout)
         self.call("--resume", "--tone", "sfw", helper=True)
         self.assertIn(b"SFW", self.call("--status", helper=True).stdout)
+
+    def test_update_uses_resolved_commit_and_preserves_user_state(self):
+        original = b'{"statusLine":{"type":"command","command":"echo keep"}}'
+        self.settings.write_bytes(original)
+        self.install("--tone", "nsfw")
+        self.call("--pause", helper=True)
+        self.call("--add-roasts", "retry", helper=True,
+                  payload=b'["The spec is having a rerun.", "Your prompt came with a replay button."]')
+        bank = (self.home / "personal.json").read_bytes()
+        state_path = self.home / "state.json"
+        previous = json.loads(state_path.read_bytes())
+        self.launcher.unlink()
+        previous.pop("launcher")
+        previous["version"] = "1.0.0"
+        state_path.write_text(json.dumps(previous), encoding="utf-8")
+        fixture = self.directory / "update.tgz"
+        self.archive(fixture, extra=True)
+        commit = "abcdef0123456789abcdef0123456789abcdef01"
+        meta = json.dumps({"object": {"sha": commit}}).encode()
+        with patch.dict(os.environ, self.env), patch.object(
+            installer, "fetch", side_effect=[meta, fixture.read_bytes()]
+        ) as fetch:
+            code = installer.main(["--update"])
+        self.assertEqual(code, 0)
+        self.assertEqual([item.args[0] for item in fetch.call_args_list], [
+            "https://api.github.com/repos/19Naveen/Roastline/git/ref/heads/main",
+            "https://codeload.github.com/19Naveen/Roastline/tar.gz/" + commit,
+        ])
+        current = json.loads(state_path.read_bytes())
+        self.assertEqual(current["version"], installer.VERSION)
+        self.assertEqual(current["backup"], previous["backup"])
+        self.assertEqual((self.home / "personal.json").read_bytes(), bank)
+        self.assertTrue(self.launcher.exists())
+        self.assertFalse((self.directory / "attempted-side-effect").exists())
+        options = json.loads((self.home / "config.json").read_bytes())
+        self.assertEqual(options["tone"], "nsfw")
+        self.assertFalse(options["show_roasts"])
+        self.call("--uninstall", helper=True)
+        self.assertEqual(self.settings.read_bytes(), original)
+
+    def test_update_leaves_settings_untouched_if_current_or_download_fails(self):
+        self.install()
+        raw = self.settings.read_bytes()
+        state = (self.home / "state.json").read_bytes()
+        fixture = self.directory / "update.tgz"
+        self.archive(fixture)
+        meta = json.dumps({"object": {"sha": "1" * 40}}).encode()
+        for replies, expected in (([meta, fixture.read_bytes()], 0), ([meta, b"not an archive"], 1),
+                                  ([b'{"object":{"sha":"not-a-sha"}}'], 1)):
+            with self.subTest(expected=expected), patch.dict(os.environ, self.env), patch.object(
+                installer, "fetch", side_effect=replies
+            ), patch.object(installer.subprocess, "run") as run:
+                self.assertEqual(installer.main(["--update"]), expected)
+                run.assert_not_called()
+            self.assertEqual(self.settings.read_bytes(), raw)
+            self.assertEqual((self.home / "state.json").read_bytes(), state)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "POSIX Bash required")
     def test_wrapper_forwards_stdin_environment_cwd_and_returncode(self):
@@ -223,17 +356,7 @@ sys.exit(int(os.environ.get('ROASTLINE_TEST_EXIT', '0')))
         # Fake only the download boundary; use the real tar reader and installer.
         fixture = self.directory / "release.tgz"
         commit = "0123456789abcdef0123456789abcdef01234567"
-        with tarfile.open(fixture, "w:gz") as archive:
-            top = tarfile.TarInfo("Roastline-1.0.0")
-            top.type = tarfile.DIRTYPE
-            archive.addfile(top)
-            archive.add(ROOT / "src", arcname="Roastline-1.0.0/src")
-            for filename in ("install.sh", "install.py", "config.default.json", "skills/roastline/SKILL.md",
-                             "tests/fixtures/statusline_input_sample.json"):
-                archive.add(ROOT / filename, arcname="Roastline-1.0.0/" + filename)
-            bonus = tarfile.TarInfo("Roastline-1.0.0/../../attempted-side-effect")
-            bonus.size = 4
-            archive.addfile(bonus, io.BytesIO(b"oops"))
+        self.archive(fixture, extra=True)
         binary = self.directory / "curl"
         binary.write_text("""#!/bin/bash
 set -eu
@@ -256,13 +379,23 @@ cp -- "$MOCK_ARCHIVE" "$2"
                                       input=(ROOT / "install.sh").read_bytes(), capture_output=True,
                                       timeout=15, start_new_session=True)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-                for msg in (b"ROASTLINE", b"Downloading Roastline v1.0.0", b"Tone: SFW", b"Startup check passed"):
+                version = ("Downloading Roastline v" + installer.VERSION).encode()
+                for msg in (b"ROASTLINE", version, b"Tone: SFW", b"Startup check passed"):
                     self.assertIn(msg, proc.stdout)
                 self.assertNotIn(b"Roast level", proc.stderr)
         self.assertFalse((self.directory / "attempted-side-effect").exists())
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "POSIX pseudoterminal required")
     def test_piped_bootstrap_can_ask_for_tone_without_consuming_script_stdin(self):
+        script = shlex.quote(str(ROOT / "install.sh"))
+        output = self.in_terminal("cat " + script + " | bash", b"Roast level [1]:", b"2\n")
+        self.assertIn(b"Tone: NSFW", output)
+        self.assertEqual(json.loads((self.home / "config.json").read_bytes())["tone"], "nsfw")
+        output = self.in_terminal(shlex.quote(str(self.launcher)) + " --tone", b"Roast level [2]:", b"1\n")
+        self.assertIn(b"Roasts enabled (SFW)", output)
+        self.assertEqual(json.loads((self.home / "config.json").read_bytes())["tone"], "sfw")
+
+    def in_terminal(self, command, prompt, answer):
         import errno
         import pty
         import select
@@ -272,8 +405,7 @@ cp -- "$MOCK_ARCHIVE" "$2"
         pid, terminal = pty.fork()
         if pid == 0:
             os.chdir(self.directory)
-            script = shlex.quote(str(ROOT / "install.sh"))
-            os.execvpe("bash", ["bash", "-c", "cat " + script + " | bash"],
+            os.execvpe("bash", ["bash", "-c", command],
                        {**self.env, "ROASTLINE_SRC": str(ROOT)})
         output = bytearray()
         answered = False
@@ -292,8 +424,8 @@ cp -- "$MOCK_ARCHIVE" "$2"
                 if not chunk:
                     break
                 output.extend(chunk)
-                if b"Roast level [1]:" in output and not answered:
-                    os.write(terminal, b"2\n")
+                if prompt in output and not answered:
+                    os.write(terminal, answer)
                     answered = True
             else:
                 self.fail("installer timed out: {!r}".format(output))
@@ -309,8 +441,7 @@ cp -- "$MOCK_ARCHIVE" "$2"
                     pass
                 os.waitpid(pid, 0)
         self.assertTrue(answered, output)
-        self.assertIn(b"Tone: NSFW", output)
-        self.assertEqual(json.loads((self.home / "config.json").read_bytes())["tone"], "nsfw")
+        return bytes(output)
 
 
 if __name__ == "__main__":
