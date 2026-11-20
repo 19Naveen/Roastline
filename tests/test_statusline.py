@@ -128,18 +128,31 @@ class StatuslineTests(unittest.TestCase):
         self.assertEqual(r.choose_trigger({}, CONFIG, NOW - 10 * 3600)[0], "late_night")
 
     def test_rotation_includes_only_detected_trigger_and_active_tone(self):
-        personal = {"sfw": {"effort": ["Custom clean line."]},
-                    "nsfw": {"effort": ["Custom spicy line, damn it."]}}
+        personal = {"sfw": {"effort": ["Custom clean line.", "Another clean line."]},
+                    "nsfw": {"effort": ["Custom spicy line, damn it.", "Another spicy line, damn it."]}}
         (self.root / "personal.json").write_text(json.dumps(personal), encoding="utf-8")
-        data = {"session_id": "session", "effort": {"level": "max"}}
+        data = {"session_id": "session", "effort": {"level": "max"},
+                "transcript_path": str(self.transcript)}
         for tone in r.TONES:
-            chosen = [r.choose_roast(data, {**CONFIG, "tone": tone}, self.root, PACKS, NOW + i * 30)
-                      for i in range(6)]
-            self.assertEqual(len({line for _, line in chosen}), 6)
+            chosen = []
+            for i in range(8):
+                self.candidates(*(message("assistant", "Finished " + str(n)) for n in range(i + 1)))
+                choice = r.choose_roast(data, {**CONFIG, "tone": tone}, self.root, PACKS, NOW)
+                self.assertEqual(choice, r.choose_roast(data, {**CONFIG, "tone": tone}, self.root, PACKS, NOW + 300))
+                chosen.append(choice)
             self.assertTrue(all(reason == "Effort max" for reason, _ in chosen))
-            self.assertIn(("Effort max", personal[tone]["effort"][0]), chosen)
+            self.assertEqual(sum(line in personal[tone]["effort"] for _, line in chosen), 6)
+            self.assertTrue(all(a != b for a, b in zip(chosen, chosen[1:])))
             other = "nsfw" if tone == "sfw" else "sfw"
             self.assertNotIn(("Effort max", personal[other]["effort"][0]), chosen)
+
+    def test_pets_are_local_static_and_fail_safe(self):
+        data = {"session_id": "session", "effort": {"level": "max"}}
+        base = r.choose_roast(data, CONFIG, self.root, PACKS, NOW)
+        for pet, face in (("cat", "(=^.^=)"), ("dog", "(U^.^U)"),
+                          ("anime", "(^_^)"), ("person", "(:-)")):
+            result = r.choose_roast(data, {**CONFIG, "pet": pet}, self.root, PACKS, NOW)
+            self.assertEqual(result, (base[0], face + " " + base[1]))
 
     def test_one_line_with_and_without_roast_at_many_widths(self):
         data = json.loads((ROOT / "tests/fixtures/statusline_input_sample.json").read_bytes())

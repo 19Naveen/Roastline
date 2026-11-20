@@ -73,6 +73,7 @@ roastline --help          # list the available options
 roastline --status        # show the installed version, tone, and backup
 roastline --tone          # pick a tone interactively
 roastline --tone sfw      # or nsfw; no prompt
+roastline --pet cat       # or dog, anime, person, off
 roastline --pause
 roastline --resume
 roastline --update        # install a newer version from GitHub
@@ -133,10 +134,19 @@ tone, and your saved jokes.
 
 ## Personalize it from Claude Code
 
-Run **`/roastline`** from any project. Ask it to draft 2–5 roasts based on how
-you've been working in the current conversation. You approve the exact jokes
-before the skill saves them to your local rotation. The same command can check
-status, pause, resume, or switch tones.
+The installed skill guides Claude to notice recurring prompting and coding habits
+and refresh your personal jokes without asking on every update. Claude decides
+when to invoke a skill, so automatic invocation is opportunistic, not guaranteed.
+It reads the local joke bank, keeps relevant lines, and rewrites the active tone
+to remove duplicates and stale jokes. Tell Claude to stop personalizing whenever
+you want. You can also inspect the bank with `roastline --personal`.
+
+Personal jokes have preference when their trigger matches. Selection changes
+when transcript messages change, not on a timer. If message data isn't available,
+the current prompt ID is used; repeated refreshes of the same prompt stay stable.
+Add a little ASCII companion with `roastline --pet cat` (or `dog`, `anime`,
+`person`); `roastline --pet off` removes it. These are static text faces, not
+animated desktop pets, and they are skipped if the statusline has no room.
 
 The built-in packs cover 20 trigger types per tone: ignored questions,
 idle breaks, repeated prompts, tiny prompts, all caps, tool marathons, rapid
@@ -150,7 +160,7 @@ skill is a normal Claude Code interaction; the statusline itself never calls
 a model. NSFW allows profanity and stronger jabs, not slurs.
 
 Optional settings live in `<config dir>/roastline/config.json`:
-`rotation_seconds`, `full_message`, `color`, and `timezone_offset` (`null` for
+`full_message`, `color`, and `timezone_offset` (`null` for
 local time, or e.g. `"+05:30"`). Use the installed helper for routine tone and
 pause changes.
 

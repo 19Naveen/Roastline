@@ -21,7 +21,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -29,7 +29,7 @@ LIMIT = 4_000_000
 LAUNCHER_NAME = "roastline.cmd" if os.name == "nt" else "roastline"
 BUNDLE_FILES = (
     "install.py", "config.default.json", "skills/roastline/SKILL.md",
-    "src/roastline.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
+    "src/roastline.py", "src/pets.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
     "tests/fixtures/statusline_input_sample.json",
 )
 BANNER = r"""
@@ -272,6 +272,37 @@ def prompt_tone(non_interactive, default="sfw"):
             if answer in ("2", "nsfw"):
                 return "nsfw"
             print("  Pick 1 or 2. The toaster can wait.", file=sys.stderr)
+    finally:
+        if stream is not sys.stdin:
+            stream.close()
+
+
+def prompt_pet(non_interactive, default="off"):
+    if non_interactive:
+        return default
+    stream = sys.stdin if sys.stdin.isatty() else None
+    try:
+        if stream is None:
+            stream = open("CONIN$" if os.name == "nt" else "/dev/tty", encoding="utf-8")
+    except OSError:
+        return default
+    try:
+        if os.name == "posix" and os.tcgetpgrp(stream.fileno()) != os.getpgrp():
+            return default
+        choices = ("off", "cat", "dog", "anime", "person")
+        print("  Pets: [0] off  [1] cat  [2] dog  [3] anime  [4] person", file=sys.stderr)
+        while True:
+            print("  Pet [{}]: ".format(default), end="", file=sys.stderr, flush=True)
+            answer = stream.readline().strip().lower()
+            if not answer:
+                return default
+            if answer in choices:
+                return answer
+            if answer in ("0", "1", "2", "3", "4"):
+                return choices[int(answer)]
+            print("  Choose 0–4 or a pet name.", file=sys.stderr)
+    except OSError:
+        return default
     finally:
         if stream is not sys.stdin:
             stream.close()
@@ -528,6 +559,8 @@ def stage_release(home, integration, source=HERE):
     try:
         (release / "roasts").mkdir()
         shutil.copyfile(source / "src/roastline.py", release / "roastline.py")
+        if (source / "src/pets.py").is_file():
+            shutil.copyfile(source / "src/pets.py", release / "pets.py")
         shutil.copyfile(source / "config.default.json", release / "config.default.json")
         for tone in TONES:
             shutil.copyfile(source / "src/roasts" / (tone + ".json"), release / "roasts" / (tone + ".json"))
@@ -566,6 +599,9 @@ def install(home, args):
         else:
             tone = args.tone or config["tone"]
         config["tone"] = tone
+        if args.pet:
+            config["pet"] = (prompt_pet(args.non_interactive, config["pet"])
+                             if args.pet is True else args.pet)
         message("OK", "Tone: {}".format(tone.upper()))
         private_dir(home.root)
         private_dir(home.releases)
@@ -716,6 +752,29 @@ def manage(home, args):
             raise InstallError("Roastline is not installed.")
         runtime = load_runtime(home.releases / state["release"] / "roastline.py")
         options = runtime.config_from(home.options)
+        if args.personal:
+            bank = object_json(raw_file(home.personal, 512_000), home.personal)
+            print(json.dumps({"tone": options["tone"], "roasts": bank}, ensure_ascii=True, indent=2))
+            return
+        if args.replace_personal:
+            raw = sys.stdin.buffer.read(512001)
+            replacement = object_json(raw if len(raw) <= 512000 else b"!", "personal roast input")
+            tone = options["tone"]
+            stock = runtime.load_pack(home.releases / state["release"] / "roasts" / (tone + ".json"), tone)
+            seen = {line.casefold() for lines in stock.values() for line in lines}
+            for trigger, lines in replacement.items():
+                if (trigger not in runtime.TRIGGERS or not isinstance(lines, list)
+                        or len(lines) > runtime.MAX_PERSONAL):
+                    raise InstallError("Invalid trigger or too many personal roasts.")
+                for line in lines:
+                    if not runtime.valid_line(line, tone, personal=True) or line.casefold() in seen:
+                        raise InstallError("Invalid or duplicate personal roast; nothing was changed.")
+                    seen.add(line.casefold())
+            bank = object_json(raw_file(home.personal, 512_000), home.personal)
+            bank[tone] = replacement
+            write_atomic(home.personal, json_bytes(bank))
+            message("OK", "Updated personal {} roasts".format(tone.upper()))
+            return
         if args.add_roasts:
             trigger = args.add_roasts
             if trigger not in runtime.TRIGGERS:
@@ -750,12 +809,15 @@ def manage(home, args):
             options["tone"] = prompt_tone(args.non_interactive, default=options["tone"])
         elif args.tone:
             options["tone"] = args.tone
+        if args.pet:
+            options["pet"] = (prompt_pet(args.non_interactive, options["pet"])
+                              if args.pet is True else args.pet)
         if args.pause or args.resume:
             options["show_roasts"] = args.resume
         if options != before:
             write_atomic(home.options, json_bytes(options))
-        message("OK", "Roasts {} ({})".format("enabled" if options["show_roasts"] else "paused",
-                                             options["tone"].upper()))
+        message("OK", "Roasts {} ({}) • pet: {}".format("enabled" if options["show_roasts"] else "paused",
+                                                        options["tone"].upper(), options["pet"]))
 
 
 def fetch(url, limit):
@@ -857,7 +919,6 @@ def main(argv=None):
     bundle = (HERE / "src/roastline.py").is_file()
     parser = argparse.ArgumentParser(
         prog=None if bundle else "roastline", description="Install or manage Roastline for Claude Code",
-        epilog="Examples: roastline --tone nsfw   |   roastline --update   |   roastline --uninstall",
     )
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--status", action="store_true", help="show the installed version, tone, and backup")
@@ -866,9 +927,13 @@ def main(argv=None):
     action.add_argument("--pause", action="store_true", help="hide roasts without removing the statusline")
     action.add_argument("--resume", action="store_true", help="show roasts again")
     action.add_argument("--add-roasts", metavar="TRIGGER", help="read 2–5 approved jokes as JSON from stdin")
+    action.add_argument("--personal", action="store_true", help="show the local personal roast bank as JSON")
+    action.add_argument("--replace-personal", action="store_true", help="replace active tone's personal bank from JSON stdin")
     action.add_argument("--triggers", action="store_true", help="list the available roast triggers")
     parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
                         help="open the tone picker or select sfw/nsfw directly")
+    parser.add_argument("--pet", nargs="?", const=True, choices=("off", "cat", "dog", "anime", "person"),
+                        help="show a small character with each roast")
     parser.add_argument("--non-interactive", action="store_true", help="do not prompt")
     if bundle:
         parser.add_argument("--create-config", action="store_true",
@@ -884,7 +949,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.purge and not args.uninstall:
         parser.error("--purge requires --uninstall")
-    manage_action = args.pause or args.resume or args.add_roasts
+    manage_action = args.pause or args.resume or args.add_roasts or args.personal or args.replace_personal
     if args.dry_run and (args.status or args.triggers or args.update or manage_action
                          or (not bundle and not args.uninstall)):
         parser.error("--dry-run is for install and uninstall only")
@@ -892,7 +957,8 @@ def main(argv=None):
         parser.error("--refresh is only set from the installer")
     if args.create_config and (args.uninstall or args.status or args.triggers or args.update or manage_action):
         parser.error("--create-config is only for installation")
-    if args.tone and (args.status or args.triggers or args.uninstall or args.update or args.add_roasts):
+    if (args.tone or args.pet) and (args.status or args.triggers or args.uninstall or args.update
+                                    or args.add_roasts or args.personal or args.replace_personal):
         parser.error("--tone is for install, tone switching, pause or resume")
     # An installed helper/launcher belongs to its own profile. Do not let a
     # different session's CLAUDE_CONFIG_DIR redirect --uninstall or --update.
@@ -913,7 +979,7 @@ def main(argv=None):
             if path is None:
                 raise InstallError("Roastline is not installed.")
             print("\n".join(load_runtime(path).TRIGGERS))
-        elif manage_action or not bundle and args.tone:
+        elif manage_action or not bundle and (args.tone or args.pet):
             manage(home, args)
         elif bundle:
             if os.environ.get("ROASTLINE_BOOTSTRAPPED") != "1":

@@ -290,6 +290,19 @@ class InstallerTests(unittest.TestCase):
         self.call("--resume", "--tone", "sfw", helper=True)
         self.assertIn(b"SFW", self.call("--status", helper=True).stdout)
 
+    def test_pet_and_replace_personal_cli(self):
+        self.install()
+        self.call("--pet", "cat", helper=True)
+        self.call("--pet", "--non-interactive", helper=True)
+        self.assertEqual(json.loads((self.home / "config.json").read_bytes())["pet"], "cat")
+        payload = b'{"retry":["The prompt has a sequel.", "The send button wants royalties."]}'
+        self.call("--replace-personal", helper=True, payload=payload)
+        bank = json.loads(self.call("--personal", helper=True).stdout)
+        self.assertEqual(bank["roasts"]["sfw"], json.loads(payload))
+        self.call("--replace-personal", helper=True, payload=b'{"retry":["repeat","repeat"]}', success=False)
+        self.assertEqual(json.loads(self.call("--personal", helper=True).stdout), bank)
+        self.assertNotIn(b"Examples:", self.call("--help", helper=True).stdout)
+
     def test_update_uses_resolved_commit_and_preserves_user_state(self):
         original = b'{"statusLine":{"type":"command","command":"echo keep"}}'
         self.settings.write_bytes(original)

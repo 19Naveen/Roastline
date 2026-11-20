@@ -2,6 +2,7 @@
 """Local statusline renderer. An existing statusline always runs first."""
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -15,7 +16,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -24,6 +25,7 @@ DEFAULTS = {
     "full_message": "FULL",
     "color": True,
     "timezone_offset": None,
+    "pet": "off",
 }
 TRIGGERS = {
     "question_wait": 8,
@@ -105,6 +107,8 @@ def config_from(path):
     config = {**DEFAULTS, **data}
     if config["tone"] not in TONES:
         raise ValueError("tone must be sfw or nsfw")
+    if config["pet"] not in ("off", "cat", "dog", "anime", "person"):
+        raise ValueError("invalid pet")
     if type(config["show_roasts"]) is not bool or type(config["color"]) is not bool:
         raise ValueError("show_roasts and color must be booleans")
     seconds = config["rotation_seconds"]
@@ -371,12 +375,43 @@ def choose_roast(data, config, root, pack_dir, now):
     trigger, reason = choose_trigger(data, config, now)
     tone = config["tone"]
     pack = load_pack(pack_dir / (tone + ".json"), tone)
-    lines = list(dict.fromkeys(pack[trigger] + personal_lines(root / "personal.json", tone, trigger)))
+    stock = pack[trigger]
+    personal = list(dict.fromkeys(personal_lines(root / "personal.json", tone, trigger)))
     session = get(data, "session_id")
     seed = (session[:256] if isinstance(session, str) else "") + ":" + trigger + ":" + tone
     offset = int.from_bytes(hashlib.sha256(seed.encode("utf-8", "replace")).digest()[:8], "big")
-    index = (int(now) // config["rotation_seconds"] + offset) % len(lines)
-    return reason, lines[index]
+    # Conversation rows, rather than wall-clock time, drive rotation. Refreshes
+    # with no new message therefore don't randomly change the joke.
+    try:
+        rows = bounded_rows(data.get("transcript_path")) if data.get("transcript_path") else []
+    except (OSError, ValueError, RecursionError, TypeError):
+        rows = []
+    if rows:
+        index = len(rows)
+    else:
+        prompt_id = data.get("prompt_id")
+        index = int.from_bytes(hashlib.sha256(str(prompt_id or "").encode()).digest()[:8], "big")
+    turn = index + offset
+    if len(personal) == 1:
+        # With one personal joke, alternate rather than show the same joke twice.
+        joke = personal[0] if turn % 2 else stock[(turn // 2) % len(stock)]
+    elif personal and turn % 4 != 0:
+        joke = personal[(turn - turn // 4 - 1) % len(personal)]
+    else:
+        joke = stock[(turn // 4) % len(stock)]
+    pet = config.get("pet", "off")
+    if pet != "off":
+        try:
+            spec = importlib.util.spec_from_file_location("roastline_pets", str(HERE / "pets.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            joke = module.decorate(joke, pet)
+        except (OSError, ImportError, ValueError, AttributeError):
+            # Older updaters stage only files known to their own version.
+            face = {"cat": "(=^.^=)", "dog": "(U^.^U)", "anime": "(^_^)", "person": "(:-)"}.get(pet)
+            if face:
+                joke = face + " " + joke
+    return reason, joke
 
 
 def format_roast(roast, room=None):
