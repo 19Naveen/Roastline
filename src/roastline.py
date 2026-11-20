@@ -15,7 +15,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",

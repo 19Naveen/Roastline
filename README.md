@@ -19,6 +19,14 @@ roasts and 100 opt-in NSFW roasts.
 Requires Claude Code and Python 3.8+. The curl installer uses Bash: on Linux, macOS,
 WSL, or Git Bash. Run Claude Code once so its config directory exists.
 
+If your Claude configuration is in a non-default location, set
+`CLAUDE_CONFIG_DIR` to that directory before installing. If it doesn't exist,
+the installer asks before creating it. For unattended setup, pass
+`--non-interactive --create-config` only after confirming the correct location.
+On WSL, if `claude` resolves to a Windows executable, install from Windows
+instead or use a native WSL Claude CLI; Roastline
+doesn't put Linux commands into Windows Claude's settings.
+
 **From GitHub:**
 
 ```bash

@@ -80,6 +80,37 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.skill.exists())
         self.assertTrue(any((self.home / "backup").iterdir()))
 
+    def test_missing_config_requires_explicit_consent_in_headless_mode(self):
+        missing = self.directory / "missing profile"
+        self.env["CLAUDE_CONFIG_DIR"] = str(missing)
+        result = self.call("--non-interactive", success=False)
+        self.assertIn(b"--create-config", result.stderr)
+        self.assertFalse(missing.exists())
+        self.call("--dry-run")
+        self.assertFalse(missing.exists())
+        self.call("--non-interactive", "--create-config", "--tone", "sfw")
+        self.assertTrue((missing / "settings.json").exists())
+        subprocess.run([sys.executable, "-I", str(missing / "roastline/install.py"), "--uninstall"],
+                       env=self.env, check=True, timeout=10, capture_output=True)
+        self.assertFalse((missing / "settings.json").exists())
+
+    @unittest.skipUnless(os.name == "posix", "Windows CLI detection is for WSL")
+    def test_windows_claude_executable_is_not_wrapped_from_wsl(self):
+        windows = self.directory / "claude.exe"
+        windows.write_bytes(b"not executed")
+        with patch.dict(os.environ, self.env), patch.object(installer.shutil, "which", return_value=str(windows)):
+            self.assertEqual(installer.main(["--non-interactive", "--create-config"]), 1)
+        self.assertEqual(list(self.config.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "POSIX pseudoterminal required")
+    def test_missing_config_can_be_created_through_piped_installer(self):
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.directory / "new config")
+        script = shlex.quote(str(ROOT / "install.sh"))
+        output = self.in_terminal("cat " + script + " | bash -s -- --tone sfw",
+                                  b"Create this directory", b"y\n")
+        self.assertIn(b"Created Claude config directory", output)
+        self.assertTrue((self.directory / "new config/settings.json").exists())
+
     @unittest.skipUnless(os.name == "posix", "POSIX launcher")
     def test_normal_profile_installs_a_command_callable_from_path(self):
         config = self.directory / ".claude"

@@ -21,7 +21,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -275,6 +275,63 @@ def prompt_tone(non_interactive, default="sfw"):
     finally:
         if stream is not sys.stdin:
             stream.close()
+
+
+def confirm_config_creation(path, non_interactive):
+    if non_interactive:
+        return False
+    stream = sys.stdin if sys.stdin.isatty() else None
+    try:
+        if stream is None:
+            stream = open("CONIN$" if os.name == "nt" else "/dev/tty", encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        if os.name == "posix":
+            try:
+                if os.tcgetpgrp(stream.fileno()) != os.getpgrp():
+                    return False
+            except OSError:
+                return False
+        print("  No Claude config exists at {}.".format(path), file=sys.stderr)
+        print("  Create this directory for this Claude profile? [y/N]: ", end="", file=sys.stderr, flush=True)
+        return stream.readline().strip().lower() in ("y", "yes")
+    finally:
+        if stream is not sys.stdin:
+            stream.close()
+
+
+def prepare_config(home, args):
+    explicit = bool(os.environ.get("CLAUDE_CONFIG_DIR"))
+    command = shutil.which("claude")
+    if command:
+        resolved = Path(command).resolve()
+        message("INFO", "Claude command: {}".format(resolved))
+        # WSL can execute Windows binaries, but their config and shell semantics
+        # differ. Never install a Linux wrapper into a Windows Claude profile.
+        if os.name == "posix" and resolved.suffix.lower() in (".exe", ".cmd", ".bat"):
+            raise InstallError("Claude appears to run from Windows ({}). Install Roastline from Windows "
+                               "instead, or install and use a native WSL Claude CLI.".format(resolved))
+    else:
+        message("NOTE", "Claude was not found on PATH; check that this is the profile Claude Code uses.")
+    if explicit:
+        message("INFO", "Using CLAUDE_CONFIG_DIR: {}".format(home.config))
+    else:
+        message("INFO", "Using default Claude config: {}".format(home.config))
+    if home.config.is_dir():
+        return True
+    if home.config.exists() or home.config.is_symlink():
+        raise InstallError("Claude config path is not a directory: {}".format(home.config))
+    if args.dry_run:
+        message("PLAN", "Would create {} only with confirmation or --create-config".format(home.config))
+        return False
+    if not args.create_config and not confirm_config_creation(home.config, args.non_interactive):
+        raise InstallError("Claude config was not created. Check CLAUDE_CONFIG_DIR or rerun with "
+                           "--create-config to create {}.".format(home.config))
+    managed_guard()
+    home.config.mkdir(mode=0o700, parents=True, exist_ok=False)
+    message("OK", "Created Claude config directory: {}".format(home.config))
+    return True
 
 
 def load_runtime(path):
@@ -814,10 +871,13 @@ def main(argv=None):
                         help="open the tone picker or select sfw/nsfw directly")
     parser.add_argument("--non-interactive", action="store_true", help="do not prompt")
     if bundle:
+        parser.add_argument("--create-config", action="store_true",
+                            help="create a missing Claude config directory without prompting")
         parser.add_argument("--refresh", type=positive, metavar="SECONDS",
                             help="set the install-time refresh interval")
     else:
         parser.set_defaults(refresh=None)
+        parser.set_defaults(create_config=False)
     parser.add_argument("--dry-run", action="store_true", help="preview install or uninstall without writing")
     parser.add_argument("--purge", action="store_true", help="remove saved data and backups on uninstall")
     parser.add_argument("--version", action="version", version="Roastline " + VERSION)
@@ -830,6 +890,8 @@ def main(argv=None):
         parser.error("--dry-run is for install and uninstall only")
     if args.refresh and (not bundle or args.uninstall or args.status or args.triggers or args.update or manage_action):
         parser.error("--refresh is only set from the installer")
+    if args.create_config and (args.uninstall or args.status or args.triggers or args.update or manage_action):
+        parser.error("--create-config is only for installation")
     if args.tone and (args.status or args.triggers or args.uninstall or args.update or args.add_roasts):
         parser.error("--tone is for install, tone switching, pause or resume")
     # An installed helper/launcher belongs to its own profile. Do not let a
@@ -857,7 +919,8 @@ def main(argv=None):
             if os.environ.get("ROASTLINE_BOOTSTRAPPED") != "1":
                 print(BANNER, flush=True)
             message("..", "Checking your Claude Code settings")
-            install(home, args)
+            if prepare_config(home, args):
+                install(home, args)
         else:
             parser.print_help()
         return 0
