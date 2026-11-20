@@ -1,0 +1,142 @@
+{
+  "question_wait": [
+    "Claude put the ball in your court. It's gathering dust.",
+    "This multiple-choice question has entered its suspense era.",
+    "Even your loading spinner has started making small talk.",
+    "Your keyboard would like to remind you it works both ways.",
+    "The dramatic pause is usually shorter than the answer."
+  ],
+  "question_late": [
+    "That question has been promoted to a calendar reminder.",
+    "The cursor blinked so long it earned a coffee break.",
+    "Claude has drafted three polite versions of 'following up.'",
+    "The ball in your court has applied for permanent residency.",
+    "This is less a chat and more a correspondence course."
+  ],
+  "question_ghosted": [
+    "The question is now covered by historical preservation laws.",
+    "Claude is addressing the follow-up to 'Current Resident.'",
+    "At this point, send your answer by postcard for consistency.",
+    "The question has a collector's edition and nobody has answered it.",
+    "The suspense has been renewed for another season."
+  ],
+  "usage_half": [
+    "We were supposed to bring snacks for the return trip.",
+    "Halfway through, and the detours have a project plan of their own.",
+    "Your casual question appears to have a second act.",
+    "A sensible person would call this the halfway point. You call it warm-up.",
+    "That was the small version of your request, wasn't it?"
+  ],
+  "usage_high": [
+    "Your 'quick one' has enough material for a season finale.",
+    "At this rate the progress bar needs its own progress bar.",
+    "The last fifth of the tank just watched you order dessert.",
+    "One more tangent and your outline becomes a box set.",
+    "Five minutes ago this was a small change. It has a logo now."
+  ],
+  "usage_critical": [
+    "You are now drafting the epilogue on the inside cover.",
+    "The remaining tokens are sharing a folding chair.",
+    "This is the part of the road trip where we turn off the AC.",
+    "Save the summary before your spare room becomes a cupboard.",
+    "Your next thought had better arrive in carry-on luggage."
+  ],
+  "usage_full": [
+    "The bar put up a 'No Vacancy' sign and meant it.",
+    "You found the end of the buffet. The buffet found you back.",
+    "The meter has stopped moving. It is now a decorative rectangle.",
+    "This is the rare loading bar that would prefer to unload.",
+    "Congratulations on fitting an entire group project in here."
+  ],
+  "idle": [
+    "Your terminal is keeping your seat warm.",
+    "Claude has resorted to rearranging the imaginary office furniture.",
+    "If this is a coffee break, the coffee has cooled.",
+    "The cursor is doing a surprisingly good impression of a lighthouse.",
+    "The code won't get shy if you look at it again."
+  ],
+  "idle_long": [
+    "The terminal has changed its greeting from 'hey' to 'welcome back.'",
+    "Your last on-screen thought now qualifies as period drama.",
+    "The cursor has been soloing for an hour. Give the rest of the band a turn.",
+    "Your terminal is basically house-sitting at this point.",
+    "The code spent your break considering a career in still life."
+  ],
+  "tools": [
+    "The tool belt is auditioning for a percussion section.",
+    "Your one request came with a whole side-quest menu.",
+    "Claude's tool calls are one stamp away from a free sandwich.",
+    "The tools have started introducing themselves by department.",
+    "This task now has more moving parts than a folding bicycle."
+  ],
+  "caps": [
+    "The lowercase letters are filing for neglect.",
+    "That prompt just walked in with a megaphone.",
+    "I heard you from the other terminal tab.",
+    "Your Shift key is taking a victory lap.",
+    "Next time add a stage direction so we know why everyone is shouting."
+  ],
+  "short": [
+    "I see you paid for the carry-on word allowance.",
+    "The prompt was so small Claude checked the back for instructions.",
+    "A haiku would have been a scope increase.",
+    "That was the trailer. Is the film out yet?",
+    "The whitespace did most of the talking."
+  ],
+  "retry": [
+    "The prompt has an encore. The requirements do not.",
+    "The second copy made the first one feel very seen.",
+    "That's not a new approach; that's the same approach in stereo.",
+    "Your prompt just hit the instant-replay button.",
+    "The rerun came on faster than the original episode ended."
+  ],
+  "burst": [
+    "You'll want a traffic light for that send button.",
+    "One more message and this becomes a live sports ticker.",
+    "Claude thought you were batching changes. You were batching messages.",
+    "Your keyboard is getting its steps in today.",
+    "The prompts are arriving like plates at a very busy diner."
+  ],
+  "flood": [
+    "That's a sprint with no cooldown lap.",
+    "The chat is doing push notifications by hand now.",
+    "Your send button is negotiating a four-day workweek.",
+    "The chat needs a queue number dispenser.",
+    "Your typing speed has outgrown the capacity of polite nodding."
+  ],
+  "late_night": [
+    "That's either dedication or a very convincing sleep workaround.",
+    "The only thing that should be running now is the dishwasher.",
+    "Your sleep schedule is the only branch nobody has reviewed.",
+    "Tomorrow you will explain this commit to yourself very slowly.",
+    "Your editor isn't dark mode; it's just dark outside."
+  ],
+  "session_regular": [
+    "This started as a chat and now has recurring characters.",
+    "You've looped back enough times to make a scenic route.",
+    "The session has been upgraded from a meeting to a workshop.",
+    "The chat transcript is developing chapters.",
+    "We should have issued name badges at the start."
+  ],
+  "session_marathon": [
+    "Republishing the transcript in paperback seems inevitable.",
+    "The session has had time to grow its own moss.",
+    "This is no longer a thread. It's yarn.",
+    "The credits rolled three times and you kept sending prompts.",
+    "The project may be smaller than the conversation about it."
+  ],
+  "effort": [
+    "The effort dial and the scope are not on speaking terms.",
+    "A whole dial just to decide how hard to think about a button.",
+    "The brain is warmed up. The requirements are still stretching.",
+    "Excellent knob selection. Now about that acceptance criterion.",
+    "You've carefully calibrated how to overthink the semicolon."
+  ],
+  "default": [
+    "The terminal is ready. Is the plan?",
+    "Loaded and waiting for your first 'tiny change.'",
+    "Today feels like a good day to name a file correctly the first time.",
+    "The code looks innocent from here. For now.",
+    "All systems normal, which is frankly suspicious."
+  ]
+}

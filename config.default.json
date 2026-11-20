@@ -1,0 +1,8 @@
+{
+  "tone": "sfw",
+  "show_roasts": true,
+  "rotation_seconds": 30,
+  "full_message": "FULL",
+  "color": true,
+  "timezone_offset": null
+}

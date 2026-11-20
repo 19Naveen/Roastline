@@ -1,0 +1,24 @@
+{
+  "cwd": "/home/[user]",
+  "workspace": {
+    "current_dir": "/home/[user]",
+    "project_dir": "/home/[user]",
+    "added_dirs": []
+  },
+  "model": {"id": "claude-opus-5-5", "display_name": "Opus 5.5"},
+  "effort": {"level": "medium"},
+  "fast_mode": false,
+  "context_window": {
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 1194,
+      "cache_read_input_tokens": 67281
+    },
+    "used_percentage": 7
+  },
+  "rate_limits": {
+    "five_hour": {"used_percentage": 5, "resets_at": 1795155000},
+    "seven_day": {"used_percentage": 77, "resets_at": 1795428000}
+  }
+}
