@@ -16,7 +16,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -290,6 +290,26 @@ def wait_label(seconds):
     return "{}h{:02d}m".format(*divmod(mins, 60)) if mins >= 60 else "{}m".format(mins)
 
 
+# Messages the user sent: typed at the prompt, or queued while Claude was busy.
+# Tool results and other internal turns are "user" rows too, without a source.
+PROMPT_SOURCES = ("typed", "queued")
+
+
+def is_prompt(row):
+    return row["type"] == "user" and row.get("promptSource") in PROMPT_SOURCES
+
+
+def last_prompt_key(rows):
+    """A stable id for the user's latest message, or None if it isn't in view."""
+    for row, _ in reversed(rows):
+        if is_prompt(row):
+            for field in ("promptId", "uuid", "timestamp"):
+                if isinstance(row.get(field), str) and row[field]:
+                    return row[field]
+            return None
+    return None
+
+
 def conversation_triggers(path, now):
     if not isinstance(path, str) or not path:
         return []
@@ -300,8 +320,7 @@ def conversation_triggers(path, now):
     if not rows:
         return []
     candidates = []
-    prompts = [(i, row, c) for i, (row, c) in enumerate(rows)
-               if row["type"] == "user" and row.get("promptSource") == "typed"]
+    prompts = [(i, row, c) for i, (row, c) in enumerate(rows) if is_prompt(row)]
     row, content = rows[-1]
     tools = [block for block in blocks_of(content) if block["type"] == "tool_use"]
     asked = any(block.get("name") == "AskUserQuestion" for block in tools)
@@ -380,17 +399,15 @@ def choose_roast(data, config, root, pack_dir, now):
     session = get(data, "session_id")
     seed = (session[:256] if isinstance(session, str) else "") + ":" + trigger + ":" + tone
     offset = int.from_bytes(hashlib.sha256(seed.encode("utf-8", "replace")).digest()[:8], "big")
-    # Conversation rows, rather than wall-clock time, drive rotation. Refreshes
-    # with no new message therefore don't randomly change the joke.
+    # The user's latest message drives rotation: the joke changes when they send
+    # one, and stays put through Claude's own turns (tool calls, results,
+    # replies) and through refreshes.
     try:
         rows = bounded_rows(data.get("transcript_path")) if data.get("transcript_path") else []
     except (OSError, ValueError, RecursionError, TypeError):
         rows = []
-    if rows:
-        index = len(rows)
-    else:
-        prompt_id = data.get("prompt_id")
-        index = int.from_bytes(hashlib.sha256(str(prompt_id or "").encode()).digest()[:8], "big")
+    prompt_key = last_prompt_key(rows) or data.get("prompt_id") or ""
+    index = int.from_bytes(hashlib.sha256(str(prompt_key).encode("utf-8", "replace")).digest()[:8], "big")
     turn = index + offset
     if len(personal) == 1:
         # With one personal joke, alternate rather than show the same joke twice.
@@ -418,7 +435,7 @@ def format_roast(roast, room=None):
     if not roast:
         return ""
     reason, joke = roast
-    prefix = reason + ": "
+    prefix = "" if reason == "Tiny prompt" else reason + ": "
     if room is None:
         return prefix + joke
     room -= display_width(prefix)
@@ -429,6 +446,15 @@ def format_roast(roast, room=None):
 
 def color(text, code, config):
     return "\x1b[{}m{}\x1b[0m".format(code, text) if text and config["color"] else text
+
+
+def unsafe_char(char):
+    """Characters whose width or effect we can't predict when appending a roast.
+
+    Private-use glyphs (Nerd Font icons such as a calendar) and invisible
+    format characters are fine; control codes and unassigned ones are not.
+    """
+    return unicodedata.category(char) in ("Cc", "Cs", "Cn") or char in "\u2028\u2029"
 
 
 def append_original(original, roast, columns, padding, config):
@@ -448,7 +474,7 @@ def append_original(original, roast, columns, padding, config):
             if line and line != plain:  # unmodelled cross-line styles
                 return original
             continue
-        if safe_text(plain) != plain:  # tabs, cursor movement, carriage return, etc.
+        if any(unsafe_char(char) for char in plain):  # tabs, cursor movement, carriage return, etc.
             return original
         links = LINK.findall(line)
         if links and not (links[-1] in ("\x1b]8;;\x07", "\x1b]8;;\x1b\\")):
@@ -456,6 +482,8 @@ def append_original(original, roast, columns, padding, config):
         available = columns - 4 - 2 * padding - display_width(line)
         if "\ufe0f" in plain:
             available -= plain.count("\ufe0f")  # emoji presentation can widen glyphs
+        # Nerd Font icons are private-use glyphs; some fonts draw them a cell wider.
+        available -= sum(unicodedata.category(char) == "Co" for char in plain)
         display = format_roast(roast, available - 2)
         if not display:
             return original

@@ -80,6 +80,46 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.skill.exists())
         self.assertTrue(any((self.home / "backup").iterdir()))
 
+    def test_hooks_keep_personal_jokes_fresh_and_leave_other_hooks_alone(self):
+        theirs = {"matcher": "startup", "hooks": [{"type": "command", "command": "bash herdr.sh session"}]}
+        original = json.dumps({"hooks": {"SessionStart": [theirs]}, "x": 1}, indent=2).encode() + b"\n"
+        self.settings.write_bytes(original)
+        self.install()
+        self.install()  # reinstalling never duplicates Roastline's hooks
+        hooks = self.config_value()["hooks"]
+        self.assertEqual(hooks["SessionStart"][0], theirs)
+        self.assertEqual(len(hooks["SessionStart"]), 2)
+        self.assertEqual(len(hooks["UserPromptSubmit"]), 1)
+        ours = hooks["SessionStart"][1]["hooks"][0]["command"]
+        self.assertIn("hook.py", ours)
+        self.assertTrue((self.home / "hook.py").is_file())
+        self.assertIn(b"Personal jokes refresh themselves", self.install().stdout)
+        self.call("--uninstall", helper=True)
+        self.assertEqual(self.settings.read_bytes(), original)
+        self.assertFalse((self.home / "hook.py").exists())
+
+    def test_hook_script_adds_hidden_context_and_stays_quiet_when_paused(self):
+        self.install()
+        hook = self.home / "hook.py"
+
+        def run(mode, payload):
+            proc = subprocess.run([sys.executable, "-I", str(hook), mode], input=payload,
+                                  capture_output=True, timeout=10, env=self.env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return proc.stdout
+
+        started = json.loads(run("session", b'{"session_id":"a","source":"startup"}'))
+        self.assertEqual(started["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        self.assertIn("roastline", started["hookSpecificOutput"]["additionalContext"])
+        replies = [run("prompt", b'{"session_id":"a","prompt":"hi"}') for _ in range(20)]
+        nudges = [i for i, out in enumerate(replies, 1) if out]
+        self.assertEqual(nudges, [10, 20])  # every tenth message, not every turn
+        self.assertEqual(json.loads(replies[9])["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        self.assertEqual(run("prompt", b"not json"), b"")
+        self.assertEqual(run("bogus", b"{}"), b"")
+        self.call("--pause", helper=True)
+        self.assertEqual(run("session", b'{"session_id":"b"}'), b"")
+
     def test_missing_config_requires_explicit_consent_in_headless_mode(self):
         missing = self.directory / "missing profile"
         self.env["CLAUDE_CONFIG_DIR"] = str(missing)

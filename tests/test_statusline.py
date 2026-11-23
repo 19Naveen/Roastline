@@ -134,17 +134,42 @@ class StatuslineTests(unittest.TestCase):
         data = {"session_id": "session", "effort": {"level": "max"},
                 "transcript_path": str(self.transcript)}
         for tone in r.TONES:
-            chosen = []
-            for i in range(8):
-                self.candidates(*(message("assistant", "Finished " + str(n)) for n in range(i + 1)))
-                choice = r.choose_roast(data, {**CONFIG, "tone": tone}, self.root, PACKS, NOW)
-                self.assertEqual(choice, r.choose_roast(data, {**CONFIG, "tone": tone}, self.root, PACKS, NOW + 300))
+            config = {**CONFIG, "tone": tone}
+            chosen, rows = [], []
+            for i in range(12):
+                # The user sends a message: a new joke may be picked.
+                # Older than 10 minutes, so the prompt-burst trigger stays out of the way.
+                rows.append(message("user", "please do part " + str(i), 601, promptId="prompt-" + str(i)))
+                self.candidates(*rows)
+                choice = r.choose_roast(data, config, self.root, PACKS, NOW)
+                self.assertEqual(choice, r.choose_roast(data, config, self.root, PACKS, NOW + 300))
+                # Claude's own turns (replies, tool calls, tool results) keep the same joke.
+                for n in range(3):
+                    rows.append(message("assistant", [{"type": "tool_use", "id": "t%d-%d" % (i, n), "name": "Bash"}]))
+                    rows.append({**message("user", [{"type": "tool_result", "tool_use_id": "t%d-%d" % (i, n)}]),
+                                 "promptSource": None})
+                    rows.append(message("assistant", "Step %d done" % n))
+                    self.candidates(*rows)
+                    self.assertEqual(r.choose_roast(data, config, self.root, PACKS, NOW), choice, (i, n))
                 chosen.append(choice)
             self.assertTrue(all(reason == "Effort max" for reason, _ in chosen))
-            self.assertEqual(sum(line in personal[tone]["effort"] for _, line in chosen), 6)
-            self.assertTrue(all(a != b for a, b in zip(chosen, chosen[1:])))
+            self.assertGreaterEqual(len(set(chosen)), 4)  # new messages do rotate the joke
+            self.assertTrue(any(line in personal[tone]["effort"] for _, line in chosen))
             other = "nsfw" if tone == "sfw" else "sfw"
-            self.assertNotIn(("Effort max", personal[other]["effort"][0]), chosen)
+            self.assertFalse(any(line in personal[other]["effort"] for _, line in chosen))
+        # A message queued while Claude was busy counts as a new message too.
+        rows.append(message("user", "and also this", promptId="queued-1", promptSource="queued"))
+        self.candidates(*rows)
+        self.assertEqual(r.last_prompt_key(r.bounded_rows(self.transcript)), "queued-1")
+
+    def test_roast_joins_a_statusline_with_nerd_font_icons(self):
+        original = "\x1b[1m\u25c6 repo\x1b[0m \u2502 \uf073 11% (25/11 15:16)".encode()
+        out = r.append_original(original, ("Effort high", "A roast."), 120, 0, CONFIG)
+        self.assertIn("Effort high: A roast.", out.decode())
+        self.assertTrue(out.startswith(original))
+        for bad in ("\t", "\r", "\x1b[2K"):  # control codes still leave the line alone
+            line = ("repo " + bad + " x").encode()
+            self.assertEqual(r.append_original(line, ("Effort high", "A roast."), 120, 0, CONFIG), line)
 
     def test_pets_are_local_static_and_fail_safe(self):
         data = {"session_id": "session", "effort": {"level": "max"}}
@@ -170,7 +195,8 @@ class StatuslineTests(unittest.TestCase):
         out = r.append_original(raw, ("Tiny prompt", "The whitespace did most of the talking."), 85, 2, CONFIG)
         self.assertTrue(out.startswith(("line one\r\n" + line).encode()))
         self.assertTrue(out.endswith(b"\r\n\r\n"))
-        self.assertIn(b"Tiny prompt: ", out)
+        self.assertNotIn(b"Tiny prompt:", out)
+        self.assertIn(b"The whitespace did most of the talking.", out)
         self.assertLessEqual(r.display_width(out.decode().splitlines()[1]), 77)
 
     def test_wrapper_passes_through_when_content_or_width_unknown(self):

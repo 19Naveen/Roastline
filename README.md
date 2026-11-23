@@ -134,16 +134,25 @@ tone, and your saved jokes.
 
 ## Personalize it from Claude Code
 
-The installed skill guides Claude to notice recurring prompting and coding habits
-and refresh your personal jokes without asking on every update. Claude decides
-when to invoke a skill, so automatic invocation is opportunistic, not guaranteed.
-It reads the local joke bank, keeps relevant lines, and rewrites the active tone
-to remove duplicates and stale jokes. Tell Claude to stop personalizing whenever
+Your personal jokes refresh themselves. The installer adds two Claude Code hooks,
+next to any hooks you already have:
+
+- **SessionStart** tells Claude, as hidden context, to use the `/roastline` skill on
+  its own when one of your habits recurs, quietly and after your request is done.
+- **UserPromptSubmit** adds a short reminder every 10th message, so long sessions
+  don't forget. On the other messages it adds nothing.
+
+`roastline --pause` silences the hooks along with the roasts; uninstall removes
+them and leaves your own hooks untouched. The skill reads the local joke bank,
+keeps relevant lines, and rewrites the active tone to remove duplicates and stale
+jokes. Tell Claude to stop personalizing whenever
 you want. You can also inspect the bank with `roastline --personal`.
 
-Personal jokes have preference when their trigger matches. Selection changes
-when transcript messages change, not on a timer. If message data isn't available,
-the current prompt ID is used; repeated refreshes of the same prompt stay stable.
+Personal jokes have preference when their trigger matches. The joke changes when
+you send a message (typed, or queued while Claude is busy) and stays the same
+through Claude's own turns: replies, tool calls and tool results. It never
+changes on a timer.
+
 Add a little ASCII companion with `roastline --pet cat` (or `dog`, `anime`,
 `person`); `roastline --pet off` removes it. These are static text faces, not
 animated desktop pets, and they are skipped if the statusline has no room.

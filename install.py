@@ -21,7 +21,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -29,7 +29,7 @@ LIMIT = 4_000_000
 LAUNCHER_NAME = "roastline.cmd" if os.name == "nt" else "roastline"
 BUNDLE_FILES = (
     "install.py", "config.default.json", "skills/roastline/SKILL.md",
-    "src/roastline.py", "src/pets.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
+    "src/roastline.py", "src/pets.py", "src/hook.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
     "tests/fixtures/statusline_input_sample.json",
 )
 BANNER = r"""
@@ -242,6 +242,66 @@ def shell_command(shell, *parts):
     if shell["kind"] == "powershell":
         return "& " + " ".join("'" + word.replace("'", "''") + "'" for word in words)
     return " ".join(shlex.quote(word) for word in words)
+
+
+# Claude Code hooks that keep personal jokes fresh without the user asking:
+# event -> (hook.py argument, matcher or None).
+HOOK_EVENTS = {
+    "SessionStart": ("session", "startup|resume|clear|compact"),
+    "UserPromptSubmit": ("prompt", None),
+}
+
+
+def hook_groups(shell, hook_path):
+    groups = {}
+    for event, (mode, matcher) in HOOK_EVENTS.items():
+        command = shell_command(shell, python_path(), "-I", hook_path, mode)
+        group = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+        groups[event] = {"matcher": matcher, **group} if matcher else group
+    return groups
+
+
+def roastline_group(group):
+    """True for a hook group Roastline added (it only runs roastline/hook.py)."""
+    hooks = group.get("hooks") if isinstance(group, dict) else None
+    return bool(isinstance(hooks, list) and hooks and all(
+        isinstance(hook, dict) and isinstance(hook.get("command"), str)
+        and re.search(r"roastline[/\\]hook\.py", hook["command"]) for hook in hooks))
+
+
+def with_hooks(settings, groups):
+    """Settings with Roastline's hook groups added; everyone else's hooks are kept."""
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict) or not all(isinstance(value, list) for value in hooks.values()):
+        raise InstallError("Claude settings have hooks in an unexpected shape. Left them untouched.")
+    merged = dict(hooks)
+    for event, group in groups.items():
+        merged[event] = [item for item in merged.get(event, []) if not roastline_group(item)] + [group]
+    return {**settings, "hooks": merged}
+
+
+def without_hooks(settings):
+    """Settings with Roastline's hook groups removed, and nothing else changed."""
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return settings
+    merged, removed = {}, False
+    for event, groups in hooks.items():
+        if isinstance(groups, list) and any(roastline_group(item) for item in groups):
+            removed = True
+            kept = [item for item in groups if not roastline_group(item)]
+            if kept:
+                merged[event] = kept
+        else:
+            merged[event] = groups
+    if not removed:
+        return settings
+    result = dict(settings)
+    if merged:
+        result["hooks"] = merged
+    else:
+        result.pop("hooks")
+    return result
 
 
 def prompt_tone(non_interactive, default="sfw"):
@@ -585,6 +645,8 @@ def install(home, args):
         message("PLAN", "Would {} at {}".format("wrap the existing statusline" if present else
                                                 "add a statusline above Claude's footer", home.settings))
         message("PLAN", "Would install both 100-line packs and the global /roastline skill")
+        if (HERE / "src/hook.py").is_file():
+            message("PLAN", "Would add SessionStart and UserPromptSubmit hooks that keep personal jokes fresh")
         return
     shell = resolve_shell()
     runtime = load_runtime(HERE / "src/roastline.py")
@@ -642,12 +704,19 @@ def install(home, args):
             private_dir(home.skill_dir)
             save(home.skill, skill)
             save(home.root / "install.py", Path(__file__).read_bytes())
+            new_settings = {**settings, "statusLine": applied}
+            if (HERE / "src/hook.py").is_file():
+                save(home.root / "hook.py", (HERE / "src/hook.py").read_bytes())
+                new_settings = with_hooks(new_settings, hook_groups(shell, home.root / "hook.py"))
+                next_state["hooks"] = True
             save(home.options, json_bytes(config))
             next_state["launcher"] = write_launcher(home, state, save)
             save(home.state, json_bytes(next_state))
-            home.change_settings(old, settings_bytes({**settings, "statusLine": applied}, old))
+            home.change_settings(old, settings_bytes(new_settings, old))
             rollback.pop_all()
     message("OK", "Global /roastline skill installed")
+    if next_state.get("hooks"):
+        message("OK", "Personal jokes refresh themselves (SessionStart and UserPromptSubmit hooks)")
     message("OK", "Startup check passed; {}".format("existing command preserved" if present else
                                                     "Roastline statusline enabled"))
     helper_cmd = shell_command(shell, python_path(), "-I", home.root / "install.py")
@@ -682,7 +751,8 @@ def uninstall(home, args):
         state = home.read_state()
         if not state:
             raise InstallError("No Roastline installation receipt. Nothing was removed.")
-        old, settings = home.read_settings()
+        old, raw_settings = home.read_settings()
+        settings = without_hooks(raw_settings)
         current = settings.get("statusLine")
         if home.owned(current, state):
             backup_path = home.backups / state["backup"]
@@ -696,8 +766,12 @@ def uninstall(home, args):
             else:
                 updated.pop("statusLine", None)
             # Restore exact bytes only if the file still matches what the installer wrote.
+            written = {**before, "statusLine": current}
+            if raw_settings is not settings:  # put back exactly the hooks the installer added
+                written = with_hooks(written, {event: group for event, groups in raw_settings["hooks"].items()
+                                               for group in groups if roastline_group(group)})
             if updated == before and old == settings_bytes(
-                {**before, "statusLine": current}, backup if state["settings_existed"] else None
+                written, backup if state["settings_existed"] else None
             ):
                 restored = backup if state["settings_existed"] else None
             else:
@@ -707,7 +781,12 @@ def uninstall(home, args):
         elif home.mentions_wrapper(current):
             raise InstallError("Your edited statusline still calls Roastline. Restore its original setting before removing files.")
         else:
+            if raw_settings is not settings:
+                home.change_settings(old, settings_bytes(settings, old))
             message("OK", "Current statusline left alone")
+        if raw_settings is not settings:
+            message("OK", "Removed the personal-joke hooks")
+        write_atomic(home.root / "hook.py", None)
         skill = None if home.skill.is_symlink() else raw_file(home.skill)
         if skill is not None and sha(skill) == state["skill_sha"]:
             home.skill.unlink()

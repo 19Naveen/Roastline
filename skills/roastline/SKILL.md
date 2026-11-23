@@ -33,9 +33,9 @@ python3 -I "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/roastline/install.py" --status
 When Roastline is installed, look opportunistically for recurring
 prompting or coding habits in the current conversation as you help with their ordinary task.
 Refresh the bank when there is a meaningful new pattern or an existing joke has become stale;
-don't interrupt the task or ask for confirmation on each refresh. This is agent-initiated
-when the skill is available and invoked, not a guaranteed background process or trigger on
-every turn. An explicit request to add, refresh, or preview jokes also invokes this workflow;
+don't interrupt the task or ask for confirmation on each refresh. Roastline's hooks remind
+you to do this at session start and every 10th user message; act on a reminder only when a
+habit has really recurred, after the user's request is done. An explicit request to add, refresh, or preview jokes also invokes this workflow;
 preview-only requests do not save. Respect requests to stop or pause personalization.
 
 1. Read the active tone with `--status` and list valid trigger keys with `--triggers`.

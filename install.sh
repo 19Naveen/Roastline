@@ -2,7 +2,7 @@
 # curl -fsSL https://raw.githubusercontent.com/19Naveen/Roastline/main/install.sh | bash
 set -euo pipefail
 
-VERSION=1.2.0
+VERSION=1.3.0
 REPO=19Naveen/Roastline
 
 note() { printf '  [%s] %s\n' "$1" "$2"; }
@@ -77,7 +77,7 @@ stage = Path(sys.argv[1])
 expected = ("VERSION=" + sys.argv[2]).encode()
 files = (
     "install.py", "config.default.json", "skills/roastline/SKILL.md",
-    "src/roastline.py", "src/pets.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
+    "src/roastline.py", "src/pets.py", "src/hook.py", "src/roasts/sfw.json", "src/roasts/nsfw.json",
     "tests/fixtures/statusline_input_sample.json",
 )
 with tarfile.open(stage / "bundle.tar.gz", "r:gz") as archive:
