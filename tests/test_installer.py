@@ -330,11 +330,9 @@ class InstallerTests(unittest.TestCase):
         self.call("--resume", "--tone", "sfw", helper=True)
         self.assertIn(b"SFW", self.call("--status", helper=True).stdout)
 
-    def test_pet_and_replace_personal_cli(self):
+    def test_replace_personal_cli(self):
         self.install()
-        self.call("--pet", "cat", helper=True)
-        self.call("--pet", "--non-interactive", helper=True)
-        self.assertEqual(json.loads((self.home / "config.json").read_bytes())["pet"], "cat")
+        self.call("--pet", "cat", helper=True, success=False)  # pets were removed
         payload = b'{"retry":["The prompt has a sequel.", "The send button wants royalties."]}'
         self.call("--replace-personal", helper=True, payload=payload)
         bank = json.loads(self.call("--personal", helper=True).stdout)

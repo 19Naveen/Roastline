@@ -2,7 +2,6 @@
 """Local statusline renderer. An existing statusline always runs first."""
 
 import hashlib
-import importlib.util
 import json
 import math
 import os
@@ -16,7 +15,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -25,7 +24,6 @@ DEFAULTS = {
     "full_message": "FULL",
     "color": True,
     "timezone_offset": None,
-    "pet": "off",
 }
 TRIGGERS = {
     "question_wait": 8,
@@ -105,10 +103,10 @@ def config_from(path):
     if not isinstance(data, dict):
         raise ValueError("Roastline config must be a JSON object")
     config = {**DEFAULTS, **data}
+    for retired in ("pet", "pet_file"):  # settings from versions that had pets
+        config.pop(retired, None)
     if config["tone"] not in TONES:
         raise ValueError("tone must be sfw or nsfw")
-    if config["pet"] not in ("off", "cat", "dog", "anime", "person"):
-        raise ValueError("invalid pet")
     if type(config["show_roasts"]) is not bool or type(config["color"]) is not bool:
         raise ValueError("show_roasts and color must be booleans")
     seconds = config["rotation_seconds"]
@@ -416,18 +414,6 @@ def choose_roast(data, config, root, pack_dir, now):
         joke = personal[(turn - turn // 4 - 1) % len(personal)]
     else:
         joke = stock[(turn // 4) % len(stock)]
-    pet = config.get("pet", "off")
-    if pet != "off":
-        try:
-            spec = importlib.util.spec_from_file_location("roastline_pets", str(HERE / "pets.py"))
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            joke = module.decorate(joke, pet)
-        except (OSError, ImportError, ValueError, AttributeError):
-            # Older updaters stage only files known to their own version.
-            face = {"cat": "(=^.^=)", "dog": "(U^.^U)", "anime": "(^_^)", "person": "(:-)"}.get(pet)
-            if face:
-                joke = face + " " + joke
     return reason, joke
 
 

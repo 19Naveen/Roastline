@@ -171,13 +171,13 @@ class StatuslineTests(unittest.TestCase):
             line = ("repo " + bad + " x").encode()
             self.assertEqual(r.append_original(line, ("Effort high", "A roast."), 120, 0, CONFIG), line)
 
-    def test_pets_are_local_static_and_fail_safe(self):
-        data = {"session_id": "session", "effort": {"level": "max"}}
-        base = r.choose_roast(data, CONFIG, self.root, PACKS, NOW)
-        for pet, face in (("cat", "(=^.^=)"), ("dog", "(U^.^U)"),
-                          ("anime", "(^_^)"), ("person", "(:-)")):
-            result = r.choose_roast(data, {**CONFIG, "pet": pet}, self.root, PACKS, NOW)
-            self.assertEqual(result, (base[0], face + " " + base[1]))
+    def test_settings_left_by_pet_versions_are_ignored(self):
+        path = self.root / "config.json"
+        path.write_text(json.dumps({"tone": "nsfw", "pet": "cat", "pet_file": "/tmp/frog.json"}), encoding="utf-8")
+        config = r.config_from(path)
+        self.assertEqual(config["tone"], "nsfw")
+        self.assertNotIn("pet", config)
+        self.assertNotIn("pet_file", config)
 
     def test_one_line_with_and_without_roast_at_many_widths(self):
         data = json.loads((ROOT / "tests/fixtures/statusline_input_sample.json").read_bytes())

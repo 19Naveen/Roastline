@@ -73,7 +73,6 @@ roastline --help          # list the available options
 roastline --status        # show the installed version, tone, and backup
 roastline --tone          # pick a tone interactively
 roastline --tone sfw      # or nsfw; no prompt
-roastline --pet cat       # or dog, anime, person, off
 roastline --pause
 roastline --resume
 roastline --update        # install a newer version from GitHub
@@ -152,10 +151,6 @@ Personal jokes have preference when their trigger matches. The joke changes when
 you send a message (typed, or queued while Claude is busy) and stays the same
 through Claude's own turns: replies, tool calls and tool results. It never
 changes on a timer.
-
-Add a little ASCII companion with `roastline --pet cat` (or `dog`, `anime`,
-`person`); `roastline --pet off` removes it. These are static text faces, not
-animated desktop pets, and they are skipped if the statusline has no room.
 
 The built-in packs cover 20 trigger types per tone: ignored questions,
 idle breaks, repeated prompts, tiny prompts, all caps, tool marathons, rapid
