@@ -17,11 +17,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.3.1"
+VERSION = "1.4.1"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -244,20 +245,18 @@ def shell_command(shell, *parts):
     return " ".join(shlex.quote(word) for word in words)
 
 
-# Claude Code hooks that keep personal jokes fresh without the user asking:
-# event -> (hook.py argument, matcher or None).
+# Claude Code hooks for occasional session roasts.
 HOOK_EVENTS = {
-    "SessionStart": ("session", "startup|resume|clear|compact"),
-    "UserPromptSubmit": ("prompt", None),
+    "UserPromptSubmit": "prompt",
+    "Stop": "stop",
 }
 
 
 def hook_groups(shell, hook_path):
     groups = {}
-    for event, (mode, matcher) in HOOK_EVENTS.items():
+    for event, mode in HOOK_EVENTS.items():
         command = shell_command(shell, python_path(), "-I", hook_path, mode)
-        group = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
-        groups[event] = {"matcher": matcher, **group} if matcher else group
+        groups[event] = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
     return groups
 
 
@@ -271,6 +270,7 @@ def roastline_group(group):
 
 def with_hooks(settings, groups):
     """Settings with Roastline's hook groups added; everyone else's hooks are kept."""
+    settings = without_hooks(settings)  # also retire Roastline's old SessionStart reminder
     hooks = settings.get("hooks", {})
     if not isinstance(hooks, dict) or not all(isinstance(value, list) for value in hooks.values()):
         raise InstallError("Claude settings have hooks in an unexpected shape. Left them untouched.")
@@ -611,9 +611,9 @@ def install(home, args):
     if args.dry_run:
         message("PLAN", "Would {} at {}".format("wrap the existing statusline" if present else
                                                 "add a statusline above Claude's footer", home.settings))
-        message("PLAN", "Would install both 100-line packs and the global /roastline skill")
+        message("PLAN", "Would install both roast packs and the global /roastline skill")
         if (HERE / "src/hook.py").is_file():
-            message("PLAN", "Would add SessionStart and UserPromptSubmit hooks that keep personal jokes fresh")
+            message("PLAN", "Would add prompt and completion hooks for occasional roasts")
         return
     shell = resolve_shell()
     runtime = load_runtime(HERE / "src/roastline.py")
@@ -680,7 +680,7 @@ def install(home, args):
             rollback.pop_all()
     message("OK", "Global /roastline skill installed")
     if next_state.get("hooks"):
-        message("OK", "Personal jokes refresh themselves (SessionStart and UserPromptSubmit hooks)")
+        message("OK", "Occasional session roasts enabled (UserPromptSubmit and Stop hooks)")
     message("OK", "Startup check passed; {}".format("existing command preserved" if present else
                                                     "Roastline statusline enabled"))
     helper_cmd = shell_command(shell, python_path(), "-I", home.root / "install.py")
@@ -795,6 +795,13 @@ def manage(home, args):
             raise InstallError("Roastline is not installed.")
         runtime = load_runtime(home.releases / state["release"] / "roastline.py")
         options = runtime.config_from(home.options)
+        if args.session_roast:
+            raw = sys.stdin.buffer.read(1025)
+            line = json.loads(raw) if len(raw) <= 1024 else None
+            if not runtime.submit_roast(args.session_roast, line, options, home.root, time.time()):
+                raise InstallError("No current roast slot, or invalid joke. Nothing was saved.")
+            message("OK", "Queued one roast for this turn")
+            return
         if args.personal:
             bank = object_json(raw_file(home.personal, 512_000), home.personal)
             print(json.dumps({"tone": options["tone"], "roasts": bank}, ensure_ascii=True, indent=2))
@@ -855,6 +862,8 @@ def manage(home, args):
         if args.pause or args.resume:
             options["show_roasts"] = args.resume
         if options != before:
+            if hasattr(runtime, "clear_live_roasts"):
+                runtime.clear_live_roasts(home.root)
             write_atomic(home.options, json_bytes(options))
         message("OK", "Roasts {} ({})".format("enabled" if options["show_roasts"] else "paused",
                                              options["tone"].upper()))
@@ -969,6 +978,7 @@ def main(argv=None):
     action.add_argument("--add-roasts", metavar="TRIGGER", help="read 2–5 approved jokes as JSON from stdin")
     action.add_argument("--personal", action="store_true", help="show the local personal roast bank as JSON")
     action.add_argument("--replace-personal", action="store_true", help="replace active tone's personal bank from JSON stdin")
+    action.add_argument("--session-roast", metavar="TOKEN", help="submit one JSON string for an offered roast slot")
     action.add_argument("--triggers", action="store_true", help="list the available roast triggers")
     parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
                         help="open the tone picker or select sfw/nsfw directly")
@@ -987,7 +997,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.purge and not args.uninstall:
         parser.error("--purge requires --uninstall")
-    manage_action = args.pause or args.resume or args.add_roasts or args.personal or args.replace_personal
+    manage_action = (args.pause or args.resume or args.add_roasts or args.personal
+                     or args.replace_personal or args.session_roast)
     if args.dry_run and (args.status or args.triggers or args.update or manage_action
                          or (not bundle and not args.uninstall)):
         parser.error("--dry-run is for install and uninstall only")
@@ -996,7 +1007,7 @@ def main(argv=None):
     if args.create_config and (args.uninstall or args.status or args.triggers or args.update or manage_action):
         parser.error("--create-config is only for installation")
     if args.tone and (args.status or args.triggers or args.uninstall or args.update
-                      or args.add_roasts or args.personal or args.replace_personal):
+                      or args.add_roasts or args.personal or args.replace_personal or args.session_roast):
         parser.error("--tone is for install, tone switching, pause or resume")
     # An installed helper/launcher belongs to its own profile. Do not let a
     # different session's CLAUDE_CONFIG_DIR redirect --uninstall or --update.

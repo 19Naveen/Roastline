@@ -80,20 +80,23 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.skill.exists())
         self.assertTrue(any((self.home / "backup").iterdir()))
 
-    def test_hooks_keep_personal_jokes_fresh_and_leave_other_hooks_alone(self):
+    def test_hooks_for_occasional_roasts_leave_other_hooks_alone(self):
         theirs = {"matcher": "startup", "hooks": [{"type": "command", "command": "bash herdr.sh session"}]}
         original = json.dumps({"hooks": {"SessionStart": [theirs]}, "x": 1}, indent=2).encode() + b"\n"
         self.settings.write_bytes(original)
         self.install()
+        upgrade = self.config_value()
+        old_roastline = {"hooks": [{"type": "command", "command": "python roastline/hook.py session"}]}
+        upgrade["hooks"]["SessionStart"].append(old_roastline)
+        self.settings.write_text(json.dumps(upgrade, indent=2) + "\n", encoding="utf-8")
         self.install()  # reinstalling never duplicates Roastline's hooks
         hooks = self.config_value()["hooks"]
-        self.assertEqual(hooks["SessionStart"][0], theirs)
-        self.assertEqual(len(hooks["SessionStart"]), 2)
+        self.assertEqual(hooks["SessionStart"], [theirs])
         self.assertEqual(len(hooks["UserPromptSubmit"]), 1)
-        ours = hooks["SessionStart"][1]["hooks"][0]["command"]
-        self.assertIn("hook.py", ours)
+        self.assertEqual(len(hooks["Stop"]), 1)
+        self.assertIn("hook.py", hooks["Stop"][0]["hooks"][0]["command"])
         self.assertTrue((self.home / "hook.py").is_file())
-        self.assertIn(b"Personal jokes refresh themselves", self.install().stdout)
+        self.assertIn(b"Occasional session roasts enabled", self.install().stdout)
         self.call("--uninstall", helper=True)
         self.assertEqual(self.settings.read_bytes(), original)
         self.assertFalse((self.home / "hook.py").exists())
@@ -103,22 +106,42 @@ class InstallerTests(unittest.TestCase):
         hook = self.home / "hook.py"
 
         def run(mode, payload):
-            proc = subprocess.run([sys.executable, "-I", str(hook), mode], input=payload,
+            driver = ("import secrets, runpy, sys; secrets.randbelow = lambda _: 0; "
+                      "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+            proc = subprocess.run([sys.executable, "-I", "-c", driver, str(hook), mode], input=payload,
                                   capture_output=True, timeout=10, env=self.env)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             return proc.stdout
 
-        started = json.loads(run("session", b'{"session_id":"a","source":"startup"}'))
-        self.assertEqual(started["hookSpecificOutput"]["hookEventName"], "SessionStart")
-        self.assertIn("roastline", started["hookSpecificOutput"]["additionalContext"])
-        replies = [run("prompt", b'{"session_id":"a","prompt":"hi"}') for _ in range(20)]
-        nudges = [i for i, out in enumerate(replies, 1) if out]
-        self.assertEqual(nudges, [10, 20])  # every tenth message, not every turn
-        self.assertEqual(json.loads(replies[9])["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        transcript = self.directory / "turn.jsonl"
+        payload = json.dumps({"session_id": "a", "transcript_path": str(transcript),
+                              "prompt": "Shorten the summary again"}).encode()
+        offered = json.loads(run("prompt", payload))["hookSpecificOutput"]
+        self.assertEqual(offered["hookEventName"], "UserPromptSubmit")
+        token = offered["additionalContext"].split("using the token ")[1].split(".")[0]
+        self.assertEqual(run("prompt", payload), b"")
+        transcript.write_text(json.dumps({
+            "type": "user", "promptSource": "typed", "uuid": "user-1",
+            "message": {"content": "Shorten the summary again"},
+        }) + "\n", encoding="utf-8")
+        line = b'"Now with 30 percent less summary."'
+        self.call("--session-roast", token, helper=True, payload=line)
+        self.call("--session-roast", token, helper=True, payload=line, success=False)
+        self.assertFalse((self.home / "personal.json").exists())
+        release = json.loads((self.home / "state.json").read_bytes())["release"]
+        renderer = self.home / "releases" / release / "roastline.py"
+
+        def render():
+            return subprocess.run([sys.executable, "-I", str(renderer)], input=payload, env=self.env,
+                                  check=True, capture_output=True, timeout=10).stdout
+
+        self.assertIn(b"Now with 30 percent less summary.", render())
         self.assertEqual(run("prompt", b"not json"), b"")
         self.assertEqual(run("bogus", b"{}"), b"")
         self.call("--pause", helper=True)
-        self.assertEqual(run("session", b'{"session_id":"b"}'), b"")
+        self.assertEqual(run("prompt", payload), b"")
+        self.call("--resume", helper=True)
+        self.assertNotIn(b"Now with 30 percent less summary.", render())
 
     def test_missing_config_requires_explicit_consent_in_headless_mode(self):
         missing = self.directory / "missing profile"
@@ -414,7 +437,7 @@ sys.exit(int(os.environ.get('ROASTLINE_TEST_EXIT', '0')))
         self.assertEqual(child.read_text(encoding="utf-8").splitlines()[0], "import os, sys")
         applied = self.config_value()["statusLine"]
         self.assertEqual({**applied, "command": command}, original["statusLine"])
-        payload = b'{"effort": {"level": "medium"}}  \n'
+        payload = b'{"session_id": "wrapper-test", "effort": {"level": "medium"}}  \n'
         env = {**self.env, "ROASTLINE_TEST_SEGMENT": "existing"}
 
         def run(**extra):
@@ -425,8 +448,10 @@ sys.exit(int(os.environ.get('ROASTLINE_TEST_EXIT', '0')))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(proc.stdout.startswith(b"first\nexisting"))
         self.assertEqual((self.directory / "received").read_bytes(), payload)
-        self.assertIn(b": ", proc.stdout.splitlines()[1])
-        for extra in ({"COLUMNS": "12"}, {"COLUMNS": ""}, {"ROASTLINE_TEST_EXIT": "7"}):
+        self.assertEqual(proc.stdout, b"first\nexisting\n")
+        payload = payload.replace(b"medium", b"high")
+        self.assertIn(b"Effort high: ", run().stdout.splitlines()[1])
+        for extra in ({"COLUMNS": "8"}, {"COLUMNS": ""}, {"ROASTLINE_TEST_EXIT": "7"}):
             proc = run(**extra)
             self.assertEqual(proc.stdout, b"first\nexisting\n")
             self.assertEqual(proc.returncode, int(extra.get("ROASTLINE_TEST_EXIT", "0")))

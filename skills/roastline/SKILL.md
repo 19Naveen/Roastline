@@ -1,14 +1,37 @@
 ---
 name: roastline
-description: Use proactively during coding conversations to refresh Roastline's personalized statusline jokes when a recurring prompting or development habit emerges, and when the user asks to manage Roastline. Keep the actual task primary and do not interrupt the user.
+description: Use when a Roastline prompt hook offers a token for a one-off session roast, or when the user asks to manage Roastline or refresh their saved jokes. Keep the actual task primary and do not interrupt the user.
 argument-hint: "[add | status | pause | resume | sfw | nsfw | update]"
 ---
 
 # Roastline
 
-Roastline rotates one reason-first joke at a time in the Claude Code statusline. The local
-renderer already reacts to behavior such as caps lock, retries, short prompts, and long tool
-runs. Use this skill when the user wants jokes that sound like they were written for them.
+Roastline occasionally shows one joke in the Claude Code statusline, not the chat.
+
+## One-off session roasts
+
+Use this workflow only for a fresh token from the Roastline hook on the current turn.
+Do the user's work first. If there's a specific, funny moment in the conversation,
+write one short punchline about the behavior, not the person. Repeatedly asking for a
+shorter version of an already short answer may be funny; asking for a summary once
+is not. If the joke feels forced, skip it.
+
+- Use only context already visible in this conversation. Respect requests to stop.
+  Don't read history, files or transcripts for material.
+- Use the tone in the hook, keep the line to about 75 characters, and omit any label.
+  NSFW can use profanity, but no slurs, threats, or attacks on sensitive traits.
+  Don't quote prompts, code, names, links, paths, credentials, or other identifiers.
+- Send the line as a **JSON string on stdin**, using the exact token from the hook.
+  Treat the joke as data, not shell code. Submit at most once and do not retry a
+  rejected or expired token. Skip if the tool isn't available or needs approval;
+  never interrupt the user for a joke. Don't mention it in the reply or save it
+  to the personal bank.
+
+```bash
+roastline --session-roast TOKEN_FROM_CURRENT_HOOK <<'ROASTLINE_JSON'
+"A TL;DR of a TL;DR. We’re compressing air now."
+ROASTLINE_JSON
+```
 
 ## Manage the installation
 
@@ -30,13 +53,8 @@ python3 -I "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/roastline/install.py" --status
 
 ## Refresh personal roasts
 
-When Roastline is installed, look opportunistically for recurring
-prompting or coding habits in the current conversation as you help with their ordinary task.
-Refresh the bank when there is a meaningful new pattern or an existing joke has become stale;
-don't interrupt the task or ask for confirmation on each refresh. Roastline's hooks remind
-you to do this at session start and every 10th user message; act on a reminder only when a
-habit has really recurred, after the user's request is done. An explicit request to add, refresh, or preview jokes also invokes this workflow;
-preview-only requests do not save. Respect requests to stop or pause personalization.
+Use this workflow when the user explicitly asks to add, refresh, or preview saved
+jokes. Preview-only requests do not save. Automatic session roasts never edit the bank.
 
 1. Read the active tone with `--status` and list valid trigger keys with `--triggers`.
    Use only patterns visible in the current conversation or facts the user explicitly

@@ -1,141 +1,81 @@
 {
   "question_wait": [
-    "Claude asked a question. Your next move is apparently a loading screen.",
     "Waiting for your answer is now the longest-running process.",
-    "The AI needs your input. A bold architecture choice, really.",
-    "Your prompt had a deadline. Your answer has a scenic route.",
     "Claude found an edge case: you have to make a decision."
   ],
   "question_late": [
-    "That question has been waiting long enough to open a support ticket.",
     "Claude asked which option. Your silence is not in the enum.",
-    "Your answer is still in code review, apparently.",
-    "The question is aging better than the dependency lockfile.",
-    "Claude is blocked on you. Welcome to the other side of standup."
+    "Your answer is still in code review, apparently."
   ],
   "question_ghosted": [
-    "That question is old enough to have its own legacy migration.",
-    "Claude's question has been archived as an unanswered issue.",
-    "Your answer has the release schedule of a rewrite from scratch.",
     "At this point the question needs a maintainer, not an answer.",
     "Claude asked for a decision, not a time capsule."
   ],
   "usage_half": [
     "Half the budget is gone and the 'quick fix' has a backstory.",
-    "You're halfway through the tank and still naming the variables.",
-    "Half the context is gone. The actual fix has entered the chat.",
-    "Your small request has consumed half the runway before takeoff.",
-    "Halfway to the limit; your scope is still warming up."
+    "You're halfway through the tank and still naming the variables."
   ],
   "usage_high": [
-    "Your token budget is doing the low-fuel light thing.",
     "The context window is full of your 'one more thing' collection.",
-    "You're approaching the limit like it's a suggested speed.",
-    "The budget is almost gone, but the rabbit hole has Wi-Fi.",
-    "Your quick fix is eating context like it's an all-you-can-prompt buffet."
+    "The budget is almost gone, but the rabbit hole has Wi-Fi."
   ],
   "usage_critical": [
     "The context window has room for one last semicolon.",
-    "You're down to the tokens hiding under the couch cushions.",
-    "Time to summarize before this session becomes an oral tradition.",
-    "The budget is so low your next prompt should be a haiku.",
-    "Your remaining context is holding its breath."
+    "Time to summarize before this session becomes an oral tradition."
   ],
   "usage_full": [
-    "The budget is empty. Even the autocomplete is window-shopping.",
     "You've hit the limit. The 'quick question' won.",
-    "No tokens left. Your next idea will have to wait outside.",
-    "The meter is full and your backlog is still waving.",
     "Session budget: zero. Confidence in the estimate: unchanged."
   ],
   "idle": [
-    "Your terminal is idle. The bugs appreciate the head start.",
-    "The cursor is blinking Morse code for 'back yet?'",
     "Your code is right where you left it. So is the bug.",
-    "Taking a break? The TODOs have formed a welcoming committee.",
     "The terminal is quiet enough to hear your tests not running."
   ],
   "idle_long": [
-    "Your terminal has been idle long enough to qualify as documentation.",
-    "The cursor has blinked through a whole sprint retrospective.",
     "Your TODOs have stopped expecting you and started a book club.",
-    "The session is still open. Its hopes are another matter.",
     "Welcome back. Your unsaved thoughts are now a cold case."
   ],
   "tools": [
     "That 'tiny change' just summoned the entire tool belt.",
-    "Claude has called so many tools the toolbox needs a receptionist.",
-    "Your request is now a group project with power tools.",
-    "Another tool call and this fix qualifies as a construction site.",
     "Claude is checking every file like the bug owes it money."
   ],
   "caps": [
     "Your caps lock is doing the work your acceptance criteria should.",
-    "ALL CAPS: because the compiler responds to volume, apparently.",
-    "Your prompt has the energy of a production alert with no logs.",
-    "The Shift key would like a word. Quietly.",
-    "Typing louder won't make the missing requirements appear."
+    "ALL CAPS: because the compiler responds to volume, apparently."
   ],
   "short": [
     "That prompt has fewer details than a commit named 'fix'.",
-    "Bold of you to ship the requirements as a tweet draft.",
-    "Your prompt is so concise the assumptions need their own repository.",
-    "A little more context and this could almost be a specification.",
     "You brought two words to a requirements meeting. Efficient."
   ],
   "retry": [
-    "Same prompt, new hope: the classic cache-clearing ritual.",
     "You sent it again. The requirements remain under witness protection.",
-    "Retrying unchanged: because maybe the bug just needed encouragement.",
-    "That prompt has been deployed twice and debugged zero times.",
-    "The repeat button is not a substitute for a reproduction step."
+    "That prompt has been deployed twice and debugged zero times."
   ],
   "burst": [
-    "Your messages are arriving faster than your requirements can merge.",
-    "One prompt at a time is apparently a premium feature.",
-    "You're sending follow-ups like they're packets on a local network.",
     "Your send button is doing continuous deployment.",
     "By the time Claude reads this, you'll have changed the scope twice."
   ],
   "flood": [
-    "The chat queue is now longer than your dependency tree.",
     "Your send button has requested a rate limit.",
-    "At this volume, your prompts need a load balancer.",
-    "You're not chatting; you're stress-testing the inbox.",
-    "The messages are arriving so fast even the scrollbar is buffering."
+    "You're not chatting; you're stress-testing the inbox."
   ],
   "late_night": [
-    "It's late enough that 'works on my machine' sounds like a lullaby.",
     "Your sleep schedule has more merge conflicts than this branch.",
-    "Tomorrow's you is going to review tonight's code with questions.",
-    "The only green check you need right now is on your alarm clock.",
     "Dark mode is working overtime. You don't have to."
   ],
   "session_regular": [
-    "This session has enough detours to qualify as a road trip.",
     "Your 'quick question' now has a changelog.",
-    "We've been here long enough for the workaround to become tradition.",
-    "The task is straightforward. The conversation took the scenic route.",
-    "This session has more plot twists than your git history."
+    "We've been here long enough for the workaround to become tradition."
   ],
   "session_marathon": [
     "This session has outlived at least three definitions of 'done'.",
-    "Your chat history is now the project's most complete documentation.",
-    "We've refactored the plan so often it needs its own migration.",
-    "This conversation started as a fix and became a software era.",
     "The original bug is probably retired by now."
   ],
   "effort": [
-    "The effort dial is maxed out. The requirements are still a shrug.",
-    "You've calibrated the thinking. Now try calibrating the scope.",
     "Maximum effort for a button rename: the button feels important.",
-    "The effort setting can't turn 'make it better' into a specification.",
     "That dial is doing more planning than the ticket."
   ],
   "default": [
-    "Ready to turn a 'small tweak' into an archaeological dig.",
-    "Your terminal is ready. Your requirements are fashionably late.",
-    "Let's find out which assumption the tests forgot to invite.",
     "The code works. That should narrow it down to everything else.",
     "Another day, another TODO pretending to be a five-minute fix."
   ]

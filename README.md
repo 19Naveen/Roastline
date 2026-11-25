@@ -1,8 +1,8 @@
 # Roastline
 
 **Your Claude Code statusline, lightly toasted.** Roastline adds one timely joke to
-your terminal without replacing the statusline you already use. It ships 100 SFW
-roasts and 100 opt-in NSFW roasts.
+your terminal without replacing the statusline you already use. It ships 40 SFW
+roasts and 40 opt-in NSFW roasts, with two jokes per trigger in each pack.
 
 ```text
         (  )  (  )
@@ -110,8 +110,8 @@ lives under `$HOME/.claude/roastline/install.py` in PowerShell.
 
 - **Already have one?** Roastline forwards stdin to your existing shell command,
   inheriting the working directory and environment. It leaves your script untouched
-  and preserves your customization options. One reason-first joke is appended
-  to the last displayed line only when there's room. Multiline output, color
+  and preserves your customization options. When a roast appears, it stays on the
+  last displayed line if it fits, or wraps below it without clipping. Multiline output, color
   and hyperlinks stay intact; unknown widths or unsupported terminal sequences
   may cause Roastline to skip the joke.
 - **No custom command?** Roastline adds a row with your project, Git branch,
@@ -120,7 +120,7 @@ lives under `$HOME/.claude/roastline/install.py` in PowerShell.
   statusline is configured. Uninstall removes the custom setting.
 - **Refresh:** Fresh custom rows use a 15-second refresh. Existing statuslines
   keep their cadence (including event-only updates). Run the installer with
-  `--refresh 15` if you want idle roasts to update even when Claude is quiet.
+  `--refresh 15` if you want late-arriving roasts to appear without another Claude event.
 - **Overrides:** Roastline won't rewrite project or managed settings. The
   installer refuses recognized filesystem-managed policy conflicts and warns
   about project overrides it sees in the current directory. A project or
@@ -131,26 +131,24 @@ The installer respects `CLAUDE_CONFIG_DIR`. Backups are saved under
 changing Claude settings. Reinstall preserves the original backup, your active
 tone, and your saved jokes.
 
-## Personalize it from Claude Code
+## When roasts appear
 
-Your personal jokes refresh themselves. The installer adds two Claude Code hooks,
-next to any hooks you already have:
+Most messages show no roast. After at least four quiet user messages since the
+last roast, eligible user turns have a one-in-six chance to get a roast slot.
+Background updates, agent replies, and tool calls don't create visible roasts.
+An observed change to the reasoning level can use an effort joke from the stored
+pack without rolling the dice, subject to the same quiet gap.
 
-- **SessionStart** tells Claude, as hidden context, to use the `/roastline` skill on
-  its own when one of your habits recurs, quietly and after your request is done.
-- **UserPromptSubmit** adds a short reminder every 10th message, so long sessions
-  don't forget. On the other messages it adds nothing.
+On a selected turn, the prompt hook gives Claude the option to write one
+conversation-specific line through the `/roastline` skill. It appears in the
+statusline, not in the reply, and expires on the next user message. At the end
+of the turn, if Claude didn't submit a line, the `Stop` hook can pick a stored
+joke that fits. If nothing fits, the statusline stays quiet. One-off jokes don't
+change the personal bank; ask Claude to refresh it explicitly or inspect it
+with `roastline --personal`.
 
-`roastline --pause` silences the hooks along with the roasts; uninstall removes
-them and leaves your own hooks untouched. The skill reads the local joke bank,
-keeps relevant lines, and rewrites the active tone to remove duplicates and stale
-jokes. Tell Claude to stop personalizing whenever
-you want. You can also inspect the bank with `roastline --personal`.
-
-Personal jokes have preference when their trigger matches. The joke changes when
-you send a message (typed, or queued while Claude is busy) and stays the same
-through Claude's own turns: replies, tool calls and tool results. It never
-changes on a timer.
+`roastline --pause` silences roasts and their hooks. Uninstall removes
+Roastline's hooks and leaves your own hooks intact.
 
 The built-in packs cover 20 trigger types per tone: ignored questions,
 idle breaks, repeated prompts, tiny prompts, all caps, tool marathons, rapid

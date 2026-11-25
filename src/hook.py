@@ -1,95 +1,65 @@
 #!/usr/bin/env python3
-"""Roastline's Claude Code hooks: keep the personal jokes fresh without being asked.
-
-    hook.py session   SessionStart: tell Claude to personalize the jokes on its own
-    hook.py prompt    UserPromptSubmit: a reminder every NUDGE_EVERY user messages
-
-Output is hidden context for Claude (hookSpecificOutput.additionalContext). The
-script never fails a hook: any problem means it prints nothing. Standard
-library only.
-"""
+"""Offer an occasional session roast and close the offer at the end of a turn."""
+import importlib.util
 import json
-import os
+import re
 import sys
-import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-NUDGE_EVERY = 10
-MAX_SESSIONS = 50
 
-SESSION = (
-    "Roastline is installed: the statusline shows jokes about how this user works. Keep "
-    "them personal without being asked. When a habit of the user's recurs in this "
-    "conversation (how they prompt, retry, scope or test, the hours they keep), invoke "
-    "the `roastline` skill and follow its 'Refresh personal roasts' steps to save 2-5 "
-    "jokes for it. Do it quietly after finishing the user's request, at most once every "
-    "~10 user messages, never for a one-off, and don't mention it unless they ask. The "
-    "user's task always comes first; if they ask you to stop personalizing, stop."
-)
 NUDGE = (
-    "Roastline check-in: if a habit of the user's has recurred since the last refresh, "
-    "invoke the `roastline` skill after you finish this request and save 2-5 personal "
-    "jokes for it, quietly. If nothing new has recurred, ignore this."
+    "Optional Roastline moment for this user turn only. Do the user's actual work first. "
+    "If something genuinely funny happened in this conversation (e.g. asking for a "
+    "TL;DR of an already short TL;DR), follow the roastline skill's 'One-off session "
+    "roasts' workflow using the token {token}. Tone: {tone}. If the skill isn't "
+    "available, there is no good line, or you were asked not to personalize, do nothing. "
+    "Do not put the joke in your reply or update the personal joke bank."
 )
 
 
-def enabled():
-    try:
-        config = json.loads((HERE / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return (isinstance(config, dict) and config.get("show_roasts", True) is not False
-            and config.get("auto_jokes", True) is not False)
-
-
-def emit(event, text):
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {
-        "hookEventName": event, "additionalContext": text}}))
-
-
-def count_prompt(session):
-    """How many messages this session has sent, counting this one."""
-    path = HERE / "hook-state.json"
-    try:
-        counts = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        counts = {}
-    if not isinstance(counts, dict):
-        counts = {}
-    previous = counts.pop(session, 0)
-    count = (previous if type(previous) is int and previous >= 0 else 0) + 1
-    counts[session] = count  # most recent last; keep only the latest sessions
-    counts = dict(list(counts.items())[-MAX_SESSIONS:])
-    handle, temp = tempfile.mkstemp(prefix=".hook-state-", dir=str(HERE))
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(counts, stream)
-        os.replace(temp, path)
-    except BaseException:
-        try:
-            os.unlink(temp)
-        except OSError:
-            pass
-        raise
-    return count
+def load_runtime():
+    info = json.loads((HERE / "state.json").read_text(encoding="utf-8"))
+    release = info.get("release", "")
+    if not re.fullmatch(r"release-[a-zA-Z0-9_-]+", release):
+        raise ValueError("invalid release")
+    spec = importlib.util.spec_from_file_location(
+        "roastline_runtime", HERE / "releases" / release / "roastline.py")
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    return runtime
 
 
 def main(argv):
     try:
-        mode = argv[0] if len(argv) == 1 else ""
-        raw = sys.stdin.read(1_000_000) if not sys.stdin.isatty() else ""
-        data = json.loads(raw) if raw.strip() else {}
-        if not isinstance(data, dict) or not enabled():
+        if argv not in (["prompt"], ["stop"]):
             return 0
-        if mode == "session":
-            emit("SessionStart", SESSION)
-        elif mode == "prompt":
-            session = data.get("session_id")
-            if isinstance(session, str) and session and count_prompt(session[:128]) % NUDGE_EVERY == 0:
-                emit("UserPromptSubmit", NUDGE)
+        raw = sys.stdin.buffer.read(1_000_001) if not sys.stdin.isatty() else b""
+        if len(raw) > 1_000_000:
+            return 0
+        data = json.loads(raw)
+        if not isinstance(data, dict) or data.get("agent_id"):
+            return 0
+        runtime = load_runtime()
+        config = runtime.config_from(HERE / "config.json")
+        if not config["show_roasts"]:
+            return 0
+        now = time.time()
+        if argv == ["prompt"]:
+            source = data.get("prompt_source") or data.get("promptSource")
+            if source and source not in ("typed", "queued"):
+                return 0
+            token = runtime.offer_roast(data, config, HERE, now)
+            if token and config.get("auto_jokes") is not False:
+                sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": NUDGE.format(token=token, tone=config["tone"]),
+                }}))
+        else:
+            runtime.finish_roast(data, config, HERE, runtime.HERE / "roasts", now)
     except Exception:
-        pass  # a hook must never get in the user's way
+        pass  # never block a user prompt or continue a finished response
     return 0
 
 

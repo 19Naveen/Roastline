@@ -7,15 +7,18 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.3.1"
+VERSION = "1.4.1"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -51,6 +54,11 @@ HERE = Path(__file__).resolve().parent
 TAIL_BYTES = 600_000
 MAX_PERSONAL = 20  # per trigger and tone
 MAX_ROAST_WIDTH = 100
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+ROAST_CHANCE = 6
+QUIET_TURNS = 4
+OFFER_TTL = 1800
+MAX_TURN_SESSIONS = 50
 SGR = re.compile(r"\x1b\[[0-9;:]*m")
 LINK = re.compile(r"\x1b\]8;[^\x07\x1b\r\n]*;[^\x07\x1b\r\n]*(?:\x07|\x1b\\)")
 PARTIAL = " ▏▎▍▌▋▊▉█"
@@ -159,8 +167,8 @@ def load_pack(path, tone):
         raise ValueError("roast pack does not cover all triggers")
     seen = set()
     for lines in data.values():
-        if not isinstance(lines, list) or len(lines) != 5:
-            raise ValueError("roast packs must have five lines per trigger")
+        if not isinstance(lines, list) or not lines:
+            raise ValueError("roast packs must have at least one line per trigger")
         for line in lines:
             if not valid_line(line, tone) or line.casefold() in seen:
                 raise ValueError("invalid or duplicate line in roast pack")
@@ -382,14 +390,14 @@ def choose_trigger(data, config, now):
     if datetime.fromtimestamp(now, timezone_for(config["timezone_offset"])).hour < 5:
         candidates.append(("late_night", "Late-night session"))
     effort = get(data, "effort", "level")
-    if effort in ("low", "medium", "high", "xhigh", "max"):
+    if effort in EFFORT_LEVELS:
         candidates.append(("effort", "Effort " + effort))
     candidates.append(("default", "Claude Code"))
     return max(candidates, key=lambda candidate: TRIGGERS[candidate[0]])
 
 
-def choose_roast(data, config, root, pack_dir, now):
-    trigger, reason = choose_trigger(data, config, now)
+def choose_roast(data, config, root, pack_dir, now, candidate=None):
+    trigger, reason = candidate or choose_trigger(data, config, now)
     tone = config["tone"]
     pack = load_pack(pack_dir / (tone + ".json"), tone)
     stock = pack[trigger]
@@ -417,17 +425,269 @@ def choose_roast(data, config, root, pack_dir, now):
     return reason, joke
 
 
-def format_roast(roast, room=None):
+def digest(text):
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def prompt_digest(text):
+    return digest(" ".join(text.split()))
+
+
+def current_prompt(path, require_reply=False):
+    """Identity of the latest real user turn; tool results never advance it."""
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        rows = bounded_rows(path)
+    except (OSError, ValueError, RecursionError):
+        return None
+    prompts = ((i, row, content) for i, (row, content) in reversed(list(enumerate(rows)))
+               if is_prompt(row))
+    latest = next(prompts, None)
+    if latest is None:
+        return None
+    index, row, content = latest
+    if require_reply and not any(r["type"] == "assistant" and text_of(c).strip()
+                                 for r, c in rows[index + 1:]):
+        return None
+
+    def identity(event):
+        for field in ("promptId", "uuid", "timestamp"):
+            if isinstance(event.get(field), str) and event[field]:
+                return digest(event[field])
+        return None
+
+    key = identity(row)
+    previous = next(prompts, None)
+    return (key, prompt_digest(text_of(content)), timestamp(row.get("timestamp")),
+            identity(previous[1]) if previous else None) if key else None
+
+
+def session_key(data):
+    session = data.get("session_id")
+    return digest(session) if isinstance(session, str) and 0 < len(session) <= 256 else None
+
+
+@contextmanager
+def turn_state(root):
+    """Serialize hook, CLI and renderer writes; the kernel releases a dead process's lock."""
+    path = root / "turn-state.json"
+    lock = os.open(root / ".turn-state.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            records = read_json(path, 512_000)
+        except (FileNotFoundError, ValueError, RecursionError):
+            records = {}
+        if not isinstance(records, dict):
+            records = {}
+        before = json.dumps(records)
+        yield records
+        if json.dumps(records) != before:
+            handle, scratch = tempfile.mkstemp(prefix=".turn-state-", dir=str(root))
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    json.dump(dict(list(records.items())[-MAX_TURN_SESSIONS:]), stream)
+                os.replace(scratch, path)
+            finally:
+                if os.path.exists(scratch):
+                    os.unlink(scratch)
+    finally:
+        os.close(lock)
+
+
+def remember(records, key):
+    record = records.pop(key, {})
+    records[key] = record
+    return record
+
+
+def cool(record, turn):
+    return turn - record.get("last_roast", -QUIET_TURNS - 1) > QUIET_TURNS
+
+
+def live_offer(offer, now):
+    return offer is not None and 0 <= now - offer["at"] <= OFFER_TTL
+
+
+def sync_prompt(record, prompt, now):
+    if prompt is None or prompt[0] == record.get("key"):
+        return
+    previous = record.get("key")
+    record["key"] = prompt[0]
+    record["turn"] = record.get("turn", 0) + 1
+    record.pop("roast", None)
+    record.pop("decided", None)
+    record.pop("usage", None)
+    offer = record.pop("offer", None)
+    record.pop("active", None)
+    if (live_offer(offer, now) and offer["after"] == previous == prompt[3]
+            and offer["text"] == prompt[1]
+            and (prompt[2] is None or prompt[2] >= offer["at"] - 3)):
+        record["active"] = offer
+        record["decided"] = True
+
+
+def offer_roast(data, config, root, now):
+    """Offer one lottery result, confirmed later against the typed/queued transcript row."""
+    key, path, text = session_key(data), data.get("transcript_path"), data.get("prompt")
+    if (not key or not isinstance(path, str) or not 0 < len(path) <= 4096
+            or not isinstance(text, str) or not text.strip()):
+        return None
+    text_key = prompt_digest(text)
+    with turn_state(root) as records:
+        prompt = current_prompt(path)
+        record = remember(records, key)
+        sync_prompt(record, prompt, now)
+        # Some versions log the user row just before sending the hook.
+        already_logged = (prompt is not None and prompt[1] == text_key and prompt[2] is not None
+                          and 0 <= now - prompt[2] <= 3)
+        if already_logged and record.get("decided"):
+            return None
+        previous = record.get("offer")
+        if live_offer(previous, now) and previous["after"] == record.get("key") and previous["text"] == text_key:
+            return None
+        turn = record.get("turn", 0) + (not already_logged)
+        # Even a speculative hook notification cannot reroll the same turn slot.
+        if record.get("roll_turn") != turn:
+            record["roll_turn"] = turn
+            record["roll_won"] = cool(record, turn) and secrets.randbelow(ROAST_CHANCE) == 0
+        token = secrets.token_hex(16) if record["roll_won"] and cool(record, turn) else None
+        offer = {"at": now, "after": record.get("key"), "text": text_key, "token": token,
+                 "tone": config["tone"], "path": path}
+        if already_logged:
+            record["active"] = offer
+            record["decided"] = True
+        else:
+            record["offer"] = offer
+        return token
+
+
+def set_turn_roast(record, roast, tone):
+    record["roast"] = [tone, *roast]
+    record["last_roast"] = record.get("turn", 0)
+
+
+def eligible_offer(record, config, now):
+    offer = record.get("active")
+    if (live_offer(offer, now) and offer["token"] and offer["tone"] == config["tone"]
+            and not record.get("roast") and cool(record, record.get("turn", 0))):
+        return offer
+    return None
+
+
+def submit_roast(token, line, config, root, now):
+    """The capability is valid once, for the currently confirmed turn only."""
+    if (not config["show_roasts"] or config.get("auto_jokes") is False
+            or not re.fullmatch(r"[0-9a-f]{32}", token)
+            or not valid_line(line, config["tone"], personal=True)):
+        return False
+    with turn_state(root) as records:
+        for record in records.values():
+            matched = next((item for item in (record.get("offer"), record.get("active"))
+                            if item and item["token"] == token), None)
+            if matched is None:
+                continue
+            prompt = current_prompt(matched["path"])
+            sync_prompt(record, prompt, now)
+            offer = eligible_offer(record, config, now)
+            if prompt is None or offer is None or offer["token"] != token:
+                return False
+            set_turn_roast(record, ("", line), config["tone"])
+            record.pop("active", None)
+            return True
+    return False
+
+
+def finish_roast(data, config, root, pack_dir, now):
+    """End an offer; if no custom line was submitted, a relevant stored joke can win."""
+    key = session_key(data)
+    if not key or data.get("stop_hook_active"):
+        return
+    with turn_state(root) as records:
+        record = records.get(key)
+        prompt = current_prompt(data.get("transcript_path"), require_reply=True)
+        if record is None or prompt is None:
+            return
+        sync_prompt(record, prompt, now)
+        offer = eligible_offer(record, config, now)
+        record.pop("active", None)
+        if offer is None:
+            return
+        candidate = choose_trigger(data, config, now)
+        usage = record.get("usage")
+        if usage and TRIGGERS[usage[0]] > TRIGGERS[candidate[0]]:
+            candidate = tuple(usage)
+        if candidate[0] not in ("default", "effort"):
+            set_turn_roast(record, choose_roast(data, config, root, pack_dir, now, candidate), config["tone"])
+
+
+def visible_roast(data, config, root, pack_dir, now):
+    key = session_key(data)
+    if not key:
+        return None
+    effort = get(data, "effort", "level")
+    with turn_state(root) as records:
+        prompt = current_prompt(data.get("transcript_path"))
+        record = remember(records, key)
+        sync_prompt(record, prompt, now)
+        if prompt is not None and eligible_offer(record, config, now):
+            record["usage"] = usage_trigger(data)
+        previous = record.get("effort")
+        if effort in EFFORT_LEVELS:
+            record["effort"] = effort
+            if (previous in EFFORT_LEVELS and previous != effort
+                    and not record.get("roast") and cool(record, record.get("turn", 0))):
+                stored = choose_roast(data, config, root, pack_dir, now, ("effort", "Effort " + effort))
+                set_turn_roast(record, stored, config["tone"])
+                record.pop("active", None)
+        roast = record.get("roast")
+        if roast and roast[0] == config["tone"] and (prompt is not None or not record.get("key")):
+            return tuple(roast[1:])
+    return None
+
+
+def clear_live_roasts(root):
+    """Don't revive a queued or displayed joke after a pause or tone change."""
+    with turn_state(root) as records:
+        for record in records.values():
+            for field in ("offer", "active", "roast", "effort"):
+                record.pop(field, None)
+
+
+def format_roast(roast):
     if not roast:
         return ""
     reason, joke = roast
-    prefix = "" if reason == "Tiny prompt" else reason + ": "
-    if room is None:
-        return prefix + joke
-    room -= display_width(prefix)
-    if room < min(12, display_width(joke)):
-        return ""
-    return prefix + truncate(joke, room)
+    prefix = "" if not reason or reason == "Tiny prompt" else reason + ": "
+    return prefix + joke
+
+
+def wrap_roast(text, width):
+    """Wrap at word boundaries when possible; never replace the punchline with an ellipsis."""
+    if width < 2:
+        return []
+    lines = []
+    while display_width(text) > width:
+        used = cut = 0
+        for char in text:
+            used += cells(char)
+            if used > width:
+                break
+            cut += 1
+        space = text.rfind(" ", 0, cut + 1)
+        if space > 0:
+            cut = space
+        lines.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        lines.append(text)
+    return lines
 
 
 def color(text, code, config):
@@ -444,7 +704,7 @@ def unsafe_char(char):
 
 
 def append_original(original, roast, columns, padding, config):
-    """Return unchanged bytes if there's any doubt that the addition fits."""
+    """Keep the original line; put a full roast below it when inline space runs out."""
     if not roast or not columns or not original:
         return original
     try:
@@ -465,17 +725,21 @@ def append_original(original, roast, columns, padding, config):
         links = LINK.findall(line)
         if links and not (links[-1] in ("\x1b]8;;\x07", "\x1b]8;;\x1b\\")):
             return original
-        available = columns - 4 - 2 * padding - display_width(line)
+        width = columns - 4 - 2 * padding
+        available = width - display_width(line)
         if "\ufe0f" in plain:
             available -= plain.count("\ufe0f")  # emoji presentation can widen glyphs
         # Nerd Font icons are private-use glyphs; some fonts draw them a cell wider.
         available -= sum(unicodedata.category(char) == "Co" for char in plain)
-        display = format_roast(roast, available - 2)
-        if not display:
-            return original
-        gap = " " * max(2, available - display_width(display))
+        display = format_roast(roast)
         reset = "\x1b[0m" if SGR.search(text) else ""
-        rows[index] = line + reset + gap + color(display, "3;95", config)
+        if display_width(display) + 2 <= available:
+            gap = " " * (available - display_width(display))
+            rows[index] = line + reset + gap + color(display, "3;95", config)
+        else:
+            ending = rows[index + 1] if index + 1 < len(rows) else (rows[1] if len(rows) > 1 else "\n")
+            rows[index] = line + "".join(ending + reset + color(part, "3;95", config)
+                                         for part in wrap_roast(display, width))
         return "".join(rows).encode("utf-8")
     return original
 
@@ -596,17 +860,18 @@ def render_builtin(data, roast, columns, config):
         width = display_width(current)
         if width <= room:
             left = current
-            if not display or width + (2 if width else 0) + display_width(display) <= room:
-                break
+            break
     else:
         if not left:
             # Never slice through an ANSI sequence.
             last = "│".join(segments(*levels[-1])) or directory
             left = truncate(SGR.sub("", last), room)
     width = display_width(left)
-    display = format_roast(roast, room - width - (2 if width else 0))
     if not display:
         return left
+    if width + (2 if width else 0) + display_width(display) > room:
+        return "\n".join(([left] if left else []) + [
+            color(part, "3;95", config) for part in wrap_roast(display, room)])
     gap = " " * max(2, room - width - display_width(display)) if left else ""
     return left + gap + color(display, "3;95", config)
 
@@ -638,7 +903,7 @@ def render(payload, integration, root, pack_dir=HERE / "roasts"):
         roast = None
         if config["show_roasts"] and (original is None or (columns and original.stdout)):
             try:
-                roast = choose_roast(data, config, root, pack_dir, time.time())
+                roast = visible_roast(data, config, root, pack_dir, time.time())
             except (OSError, ValueError, RecursionError, OverflowError):
                 pass
         if original is not None:

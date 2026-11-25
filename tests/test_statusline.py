@@ -38,15 +38,24 @@ class StatuslineTests(unittest.TestCase):
         self.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
         return dict(r.conversation_triggers(str(self.transcript), NOW))
 
-    def test_each_pack_has_100_distinct_roasts_and_covers_every_trigger(self):
+    def test_each_pack_has_two_distinct_roasts_per_trigger(self):
         all_jokes = set()
         for tone in r.TONES:
             pack = r.load_pack(PACKS / (tone + ".json"), tone)
             jokes = {joke.casefold() for lines in pack.values() for joke in lines}
             self.assertEqual(set(r.TRIGGERS), set(pack))
-            self.assertEqual(len(jokes), 100)
+            self.assertTrue(all(len(lines) == 2 for lines in pack.values()))
+            self.assertEqual(len(jokes), 2 * len(r.TRIGGERS))
             self.assertFalse(all_jokes & jokes)
             all_jokes.update(jokes)
+
+    def test_pack_loader_rejects_an_empty_trigger(self):
+        pack = r.load_pack(PACKS / "sfw.json", "sfw")
+        pack["short"] = []
+        path = self.root / "pack.json"
+        path.write_text(json.dumps(pack), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "at least one line per trigger"):
+            r.load_pack(path, "sfw")
 
     def test_assistant_question_formats_and_thresholds(self):
         for delay, kind in ((60, "question_wait"), (300, "question_late"), (1800, "question_ghosted")):
@@ -179,15 +188,20 @@ class StatuslineTests(unittest.TestCase):
         self.assertNotIn("pet", config)
         self.assertNotIn("pet_file", config)
 
-    def test_one_line_with_and_without_roast_at_many_widths(self):
+    def test_builtin_wraps_roast_at_many_widths_without_ellipses(self):
         data = json.loads((ROOT / "tests/fixtures/statusline_input_sample.json").read_bytes())
         data["model"]["display_name"] = "運" * 23 + "é"
         for width in (1, 8, 40, 80, 90, 120, 162, 220):
             for joke in (None, ("Tiny prompt", "A " + "漢" * 40 + " joke")):
                 with self.subTest(width=width, joke=joke):
                     rendered = r.render_builtin(data, joke, width, {**CONFIG, "color": True})
-                    self.assertNotIn("\n", rendered)
-                    self.assertLessEqual(r.display_width(rendered), max(0, width - 4))
+                    if not joke:
+                        self.assertNotIn("\n", rendered)
+                    for row in rendered.splitlines():
+                        self.assertLessEqual(r.display_width(row), max(0, width - 4))
+                    if joke and width > 5:
+                        self.assertEqual(rendered.count("漢"), 40)
+                        self.assertTrue(rendered.endswith("joke\x1b[0m"))
 
     def test_wrapper_preserves_original_multiline_style_and_line_endings(self):
         line = "\x1b[32mbranch 界\x1b[0m \x1b]8;;https://example.com\x07link\x1b]8;;\x07"
@@ -202,8 +216,96 @@ class StatuslineTests(unittest.TestCase):
     def test_wrapper_passes_through_when_content_or_width_unknown(self):
         joke = ("Tiny prompt", "A fair bit of text")
         for out, columns in ((b"\xffnot UTF8", 200), (b"left\tvalue", 200), (b"a\x1b[2K", 200),
-                             (b"A" * 100, 80), (b"existing", None), (b"", 80)):
+                             (b"existing", None), (b"", 80)):
             self.assertEqual(r.append_original(out, joke, columns, 0, CONFIG), out)
+
+    def test_wrapper_moves_roast_below_full_row_and_wraps_the_whole_joke(self):
+        original = b"metadata\r\n\x1b[35m" + b"X" * 29 + b"\x1b[0m\r\n\r\n"
+        joke = ("5h 63%", "The usage bar isn't a drinking game, for goodness' sake.")
+        out = r.append_original(original, joke, 34, 0, CONFIG).decode()
+        rows = out.split("\r\n")
+        self.assertEqual(rows[:2], original.decode().split("\r\n")[:2])
+        self.assertEqual(rows[-2:], ["", ""])
+        self.assertEqual(" ".join(r.SGR.sub("", row) for row in rows[2:-2]), r.format_roast(joke))
+        self.assertTrue(all(r.display_width(row) <= 30 for row in rows))
+
+    def test_session_roast_is_one_shot_and_observes_cooldown(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        rows = []
+        joke = "A summary of a summary. We're compressing air."
+        with patch.object(r.secrets, "randbelow", return_value=0) as roll:
+            for i in range(1, 7):
+                now = NOW + i * 10
+                text = "Summarize part " + str(i)
+                token = r.offer_roast({**data, "prompt": text}, CONFIG, self.root, now)
+                self.assertEqual(bool(token), i in (1, 6))
+                self.assertIsNone(r.offer_roast({**data, "prompt": text}, CONFIG, self.root, now))
+                rows.append(message("user", text, -i * 10, uuid="prompt-" + str(i)))
+                self.candidates(*rows)
+                self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, now))
+                if i == 1:
+                    self.assertFalse(r.submit_roast(token, "This is fucking broken.", CONFIG, self.root, now))
+                    self.assertTrue(r.submit_roast(token, joke, CONFIG, self.root, now))
+                    self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))
+                    rows.append(message("assistant", "One sentence."))
+                    self.candidates(*rows)
+                    r.finish_roast(data, CONFIG, self.root, PACKS, now)
+                    self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, now), ("", joke))
+                    self.assertIsNone(r.visible_roast({**data, "session_id": "other"}, CONFIG, self.root, PACKS, now))
+            self.assertEqual(roll.call_count, 2)
+            self.assertEqual(roll.call_args.args, (6,))
+
+    def test_fallback_uses_stored_joke_only_after_finishing_a_confirmed_turn(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        with patch.object(r.secrets, "randbelow", return_value=0):
+            ignored = r.offer_roast({**data, "prompt": "Scheduled task"}, CONFIG, self.root, NOW)
+        internal = message("user", "Scheduled task", promptSource=None)
+        self.candidates(internal, message("assistant", "Background response."))
+        r.finish_roast(data, CONFIG, self.root, PACKS, NOW)
+        self.assertFalse(r.submit_roast(ignored, "A joke.", CONFIG, self.root, NOW))
+        with patch.object(r.secrets, "randbelow", return_value=0):
+            token = r.offer_roast({**data, "prompt": "fix"}, CONFIG, self.root, NOW + 5)
+        user = message("user", "fix", -5, uuid="typed")
+        self.candidates(internal, user)
+        r.finish_roast(data, CONFIG, self.root, PACKS, NOW + 5)
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 5))
+        self.candidates(internal, user, message("assistant", "Fixed.", -6))
+        r.finish_roast(data, CONFIG, self.root, PACKS, NOW + 6)
+        roast = r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 6)
+        self.assertEqual(roast[0], "Tiny prompt")
+        self.assertIn(roast[1], r.load_pack(PACKS / "sfw.json", "sfw")["short"])
+        self.assertFalse(r.submit_roast(token, "Too late.", CONFIG, self.root, NOW + 6))
+
+    def test_effort_change_uses_stored_joke_without_rerolling(self):
+        data = {"session_id": "s", "effort": {"level": "high"}, "transcript_path": str(self.transcript)}
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
+        data["effort"]["level"] = "max"
+        first = r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
+        self.assertEqual(first[0], "Effort max")
+        self.assertIn(first[1], r.load_pack(PACKS / "sfw.json", "sfw")["effort"])
+        data["effort"]["level"] = "low"
+        self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 1), first)
+        self.candidates(message("user", "Please fix the broken build."))
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 2))
+
+    def test_late_token_cannot_target_the_next_user_turn(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        with patch.object(r.secrets, "randbelow", return_value=0):
+            token = r.offer_roast({**data, "prompt": "Make it shorter"}, CONFIG, self.root, NOW)
+        self.candidates(message("user", "Make it shorter", uuid="one"),
+                        message("user", "Make it shorter", -10, uuid="two"))
+        self.assertFalse(r.submit_roast(token, "Wrong turn.", CONFIG, self.root, NOW + 10))
+
+    def test_internal_prompt_events_cannot_reroll_a_quiet_slot(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        with patch.object(r.secrets, "randbelow", side_effect=[1, 0]) as roll:
+            for text in ("Background task", "Tool output", "Actual user prompt"):
+                self.assertIsNone(r.offer_roast({**data, "prompt": text}, CONFIG, self.root, NOW))
+            self.candidates(message("user", "Actual user prompt", uuid="first"))
+            self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
+            self.assertIsNotNone(r.offer_roast({**data, "prompt": "Second user prompt"},
+                                              CONFIG, self.root, NOW + 10))
+            self.assertEqual(roll.call_count, 2)
 
     def test_git_branch_reports_detached_commit_and_ahead_behind(self):
         with patch.object(r.subprocess, "run") as run:

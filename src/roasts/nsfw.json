@@ -1,142 +1,82 @@
 {
   "question_wait": [
-    "The ball's in your court. Pick the damn thing up.",
-    "Claude asked a question, not for your fucking memoir.",
     "Blink twice if the keyboard has taken you hostage.",
-    "Your keyboard's not a damn museum exhibit. Touch it.",
     "This is a yes-or-no question, not a fucking cliffhanger."
   ],
   "question_late": [
     "You've left a computer on read. Cold as shit.",
-    "The question's old enough to tell you to get your shit together.",
-    "Claude's writing passive-aggressive follow-ups like a pissed-off landlord.",
-    "The cursor isn't blinking at you for its own damn amusement.",
     "If ignoring questions were billable, you'd be rich as hell."
   ],
   "question_ghosted": [
-    "At this point even a carrier pigeon would have done the damn job.",
-    "Your silence has been escalated to the whole fucking committee.",
     "How the hell do you ghost a program that lives on your computer?",
-    "The question has retired. Congratulations on missing the whole damn career.",
-    "We could engrave the answer in stone before you type the shit."
+    "The question has retired. Congratulations on missing the whole damn career."
   ],
   "usage_half": [
-    "Half the tank gone and you still don't know where the hell we're going.",
-    "You treated the first half like it was on someone else's damn tab.",
     "That's a lot of tokens for a 'tiny fucking tweak.'",
-    "The usage bar isn't a drinking game, for fuck's sake.",
-    "Buy the meter a drink before you make it work overtime again."
+    "The usage bar isn't a drinking game, for fuck's sake."
   ],
   "usage_high": [
     "That tidy little task has become a whole-ass franchise.",
-    "You're burning through budget like the numbers owe you money.",
-    "The bar is begging you to pick a damn lane.",
-    "The budget says 'wrap it up.' You heard 'encore, motherfucker.'",
     "One more 'while you're there' and this shit gets its own zip code."
   ],
   "usage_critical": [
     "The remaining tokens fit in a goddamn thimble.",
-    "Put the damn tangents down and walk away slowly.",
-    "You've reached the 'save your shit' portion of the tour.",
-    "The meter's so close to empty it's running on your bullshit.",
-    "You brought premium-grade chaos and a pocket-sized fucking budget."
+    "The meter's so close to empty it's running on your bullshit."
   ],
   "usage_full": [
-    "You didn't push the limit. You backed a damn truck over it.",
     "The bar is full. So was your claim that this was a quick fix.",
-    "That's it. You ate the buffet and tried to order the fucking table.",
-    "You spent the whole damn budget and didn't even leave a tip.",
     "Congratulations. You've made a rectangle say 'fuck it.'"
   ],
   "idle": [
-    "The cursor's doing all the damn work right now.",
-    "If you're waiting for this shit to fix itself, it isn't.",
-    "Whatever got your attention had better be a damn good sandwich.",
     "The repo has ten stale branches and you found time to join them.",
     "This is a coffee break, not a fucking research sabbatical."
   ],
   "idle_long": [
-    "The terminal's been house-sitting for so long it wants a damn key.",
     "Your absence is now the most consistent thing in this goddamn repo.",
-    "Claude's gone from mildly confused to professionally pissed off.",
-    "You didn't take a break. You went on a whole-ass side quest.",
-    "The cursor's running out of ways to say 'where the hell are you?'"
+    "You didn't take a break. You went on a whole-ass side quest."
   ],
   "tools": [
-    "The tool belt needs a goddamn tool belt.",
     "Someone tell the tool calls they aren't paid by the fucking mile.",
-    "Turns out 'just one file' was some award-winning bullshit.",
-    "This job has more subprocesses than the damn approval chain.",
-    "The tools wrote a group chat about the shit you asked them to do."
+    "Turns out 'just one file' was some award-winning bullshit."
   ],
   "caps": [
     "Caps lock is not a fucking requirements document.",
-    "I can hear you from three goddamn tabs away.",
-    "Even the exclamation marks think you need to dial that shit back.",
-    "Your prompt came in swinging a fucking air horn.",
-    "The Shift key has done enough. Give the damn thing a minute."
+    "I can hear you from three goddamn tabs away."
   ],
   "short": [
-    "That's a postcard from the island of 'figure it the fuck out.'",
-    "The prompt showed up with no luggage and no damn address.",
-    "Another word wouldn't have killed you. It might have killed the confusion.",
     "You supplied less context than a fucking fortune cookie.",
     "A detailed spec, if you're programming a goddamn doorbell."
   ],
   "retry": [
-    "Same prompt, louder in spirit. Genius fucking strategy.",
-    "Pressing the damn button twice didn't add a requirement.",
-    "The rerun is fine. The original plot still makes no damn sense.",
     "Copy, paste, and pray: a developer's unholy fucking trinity.",
     "You're treating the prompt box like a broken-ass elevator button."
   ],
   "burst": [
-    "The conversation is trying to merge into traffic. Chill the hell out.",
-    "That's not a prompt queue. That's a goddamn conga line.",
     "The Send key is working a double and getting paid jack shit.",
-    "Let one sentence land before you launch the whole damn fleet.",
     "That's a lot of typing to still call it a 'quick fucking question.'"
   ],
   "flood": [
-    "The chat needs a fire marshal and a goddamn guest list.",
-    "Your keyboard's a machine gun and your backlog is catching strays.",
     "You're not iterating. You're hosting a fucking auction.",
-    "That send rate belongs to a damn emergency alert system.",
     "Claude would love to answer one before you send the next fucking ten."
   ],
   "late_night": [
     "Go the fuck to sleep. The bug is nocturnal too.",
-    "Your sleep schedule is more broken than the damn build.",
-    "Tomorrow's git blame is going to be an absolute shitshow.",
-    "This is tomorrow's problem wearing an 'urgent' hat, damn it.",
-    "Your screen's on night mode. Your damn brain missed the memo."
+    "Tomorrow's git blame is going to be an absolute shitshow."
   ],
   "session_regular": [
     "We crossed 'quick chat' back at the third damn subplot.",
-    "The chat has a cast list and you still haven't picked a fucking ending.",
-    "At this point, the context needs a damn index at the back.",
-    "This thread is long enough to trip over in a dark-ass room.",
     "You could have written the whole damn changelog in fewer messages."
   ],
   "session_marathon": [
     "This conversation has chapters, appendices, and a fucking director's cut.",
-    "The task was a sprint; you turned it into a goddamn pilgrimage.",
-    "These prompts need a damned table of contents.",
-    "The transcript is a whole-ass exhibit about scope creep.",
     "What the hell is keeping this chat alive? Spite?"
   ],
   "effort": [
-    "Lovely effort setting. The requirements are still doing fuck-all.",
-    "Did you set that dial for the problem or for the goddamn drama?",
     "Adjusting the brain settings won't fix a half-assed spec.",
-    "The dial's calibrated. Now decide what the hell we're building.",
     "So much effort spent deciding how much effort to spend. Beautiful bullshit."
   ],
   "default": [
     "Let's see what the hell counts as 'small' today.",
-    "Ready to turn one line of code into a goddamn saga.",
-    "The terminal is open. All bets are fucking off.",
-    "Nothing's on fire yet. Don't take that as a formal challenge.",
-    "Do your worst. Just leave a decent damn commit message."
+    "Nothing's on fire yet. Don't take that as a formal challenge."
   ]
 }
