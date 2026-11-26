@@ -24,8 +24,10 @@
     "Time to summarize before this session becomes an oral tradition."
   ],
   "usage_full": [
-    "You've hit the limit. The 'quick question' won.",
-    "Session budget: zero. Confidence in the estimate: unchanged."
+    "Even the AI left you on read.",
+    "The AI has gone out for tokens. It said not to wait up.",
+    "Your 'quick question' just put the AI on unpaid leave.",
+    "The AI set its out-of-office reply to 'one more thing.'"
   ],
   "idle": [
     "Your code is right where you left it. So is the bug.",

@@ -38,14 +38,14 @@ class StatuslineTests(unittest.TestCase):
         self.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
         return dict(r.conversation_triggers(str(self.transcript), NOW))
 
-    def test_each_pack_has_two_distinct_roasts_per_trigger(self):
+    def test_each_pack_has_multiple_distinct_roasts_per_trigger(self):
         all_jokes = set()
         for tone in r.TONES:
             pack = r.load_pack(PACKS / (tone + ".json"), tone)
             jokes = {joke.casefold() for lines in pack.values() for joke in lines}
             self.assertEqual(set(r.TRIGGERS), set(pack))
-            self.assertTrue(all(len(lines) == 2 for lines in pack.values()))
-            self.assertEqual(len(jokes), 2 * len(r.TRIGGERS))
+            self.assertTrue(all(len(lines) >= 2 for lines in pack.values()))
+            self.assertGreaterEqual(len(pack["usage_full"]), 4)
             self.assertFalse(all_jokes & jokes)
             all_jokes.update(jokes)
 
@@ -229,64 +229,64 @@ class StatuslineTests(unittest.TestCase):
         self.assertEqual(" ".join(r.SGR.sub("", row) for row in rows[2:-2]), r.format_roast(joke))
         self.assertTrue(all(r.display_width(row) <= 30 for row in rows))
 
-    def test_session_roast_is_one_shot_and_observes_cooldown(self):
+    def test_claude_can_roast_on_consecutive_turns_or_stay_quiet(self):
         data = {"session_id": "s", "transcript_path": str(self.transcript)}
         rows = []
         joke = "A summary of a summary. We're compressing air."
-        with patch.object(r.secrets, "randbelow", return_value=0) as roll:
-            for i in range(1, 7):
+        with patch.object(r.secrets, "randbelow") as roll:
+            for i in range(1, 5):
                 now = NOW + i * 10
                 text = "Summarize part " + str(i)
                 token = r.offer_roast({**data, "prompt": text}, CONFIG, self.root, now)
-                self.assertEqual(bool(token), i in (1, 6))
+                self.assertIsNotNone(token)
                 self.assertIsNone(r.offer_roast({**data, "prompt": text}, CONFIG, self.root, now))
                 rows.append(message("user", text, -i * 10, uuid="prompt-" + str(i)))
                 self.candidates(*rows)
                 self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, now))
-                if i == 1:
+                if i != 2:
                     self.assertFalse(r.submit_roast(token, "This is fucking broken.", CONFIG, self.root, now))
                     self.assertTrue(r.submit_roast(token, joke, CONFIG, self.root, now))
                     self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))
-                    rows.append(message("assistant", "One sentence."))
-                    self.candidates(*rows)
-                    r.finish_roast(data, CONFIG, self.root, PACKS, now)
-                    self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, now), ("", joke))
-                    self.assertIsNone(r.visible_roast({**data, "session_id": "other"}, CONFIG, self.root, PACKS, now))
-            self.assertEqual(roll.call_count, 2)
-            self.assertEqual(roll.call_args.args, (6,))
+                rows.append(message("assistant", "One sentence."))
+                self.candidates(*rows)
+                r.finish_roast(data, self.root, now)
+                expected = None if i == 2 else ("", joke)
+                self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, now), expected)
+                self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))
+                self.assertIsNone(r.visible_roast({**data, "session_id": "other"}, CONFIG, self.root, PACKS, now))
+            roll.assert_not_called()
 
-    def test_fallback_uses_stored_joke_only_after_finishing_a_confirmed_turn(self):
+    def test_unconfirmed_prompt_and_declined_chat_have_no_stock_fallback(self):
         data = {"session_id": "s", "transcript_path": str(self.transcript)}
-        with patch.object(r.secrets, "randbelow", return_value=0):
-            ignored = r.offer_roast({**data, "prompt": "Scheduled task"}, CONFIG, self.root, NOW)
+        ignored = r.offer_roast({**data, "prompt": "Scheduled task"}, CONFIG, self.root, NOW)
         internal = message("user", "Scheduled task", promptSource=None)
         self.candidates(internal, message("assistant", "Background response."))
-        r.finish_roast(data, CONFIG, self.root, PACKS, NOW)
+        r.finish_roast(data, self.root, NOW)
         self.assertFalse(r.submit_roast(ignored, "A joke.", CONFIG, self.root, NOW))
-        with patch.object(r.secrets, "randbelow", return_value=0):
-            token = r.offer_roast({**data, "prompt": "fix"}, CONFIG, self.root, NOW + 5)
+        token = r.offer_roast({**data, "prompt": "fix"}, CONFIG, self.root, NOW + 5)
         user = message("user", "fix", -5, uuid="typed")
         self.candidates(internal, user)
-        r.finish_roast(data, CONFIG, self.root, PACKS, NOW + 5)
+        r.finish_roast(data, self.root, NOW + 5)
         self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 5))
         self.candidates(internal, user, message("assistant", "Fixed.", -6))
-        r.finish_roast(data, CONFIG, self.root, PACKS, NOW + 6)
-        roast = r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 6)
-        self.assertEqual(roast[0], "Tiny prompt")
-        self.assertIn(roast[1], r.load_pack(PACKS / "sfw.json", "sfw")["short"])
+        r.finish_roast(data, self.root, NOW + 6)
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 6))
         self.assertFalse(r.submit_roast(token, "Too late.", CONFIG, self.root, NOW + 6))
 
-    def test_effort_change_uses_stored_joke_without_rerolling(self):
+    def test_effort_changes_rotate_stock_and_refreshes_keep_the_same_joke(self):
         data = {"session_id": "s", "effort": {"level": "high"}, "transcript_path": str(self.transcript)}
         self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
         data["effort"]["level"] = "max"
         first = r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
         self.assertEqual(first[0], "Effort max")
         self.assertIn(first[1], r.load_pack(PACKS / "sfw.json", "sfw")["effort"])
-        data["effort"]["level"] = "low"
         self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 1), first)
+        data["effort"]["level"] = "low"
+        second = r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 2)
+        self.assertEqual(second[0], "Effort low")
+        self.assertNotEqual(second[1], first[1])
         self.candidates(message("user", "Please fix the broken build."))
-        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 2))
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 3))
 
     def test_late_token_cannot_target_the_next_user_turn(self):
         data = {"session_id": "s", "transcript_path": str(self.transcript)}
@@ -296,16 +296,36 @@ class StatuslineTests(unittest.TestCase):
                         message("user", "Make it shorter", -10, uuid="two"))
         self.assertFalse(r.submit_roast(token, "Wrong turn.", CONFIG, self.root, NOW + 10))
 
-    def test_internal_prompt_events_cannot_reroll_a_quiet_slot(self):
+    def test_usage_limit_crossings_trigger_stock_even_on_consecutive_turns(self):
         data = {"session_id": "s", "transcript_path": str(self.transcript)}
-        with patch.object(r.secrets, "randbelow", side_effect=[1, 0]) as roll:
-            for text in ("Background task", "Tool output", "Actual user prompt"):
-                self.assertIsNone(r.offer_roast({**data, "prompt": text}, CONFIG, self.root, NOW))
-            self.candidates(message("user", "Actual user prompt", uuid="first"))
-            self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
-            self.assertIsNotNone(r.offer_roast({**data, "prompt": "Second user prompt"},
-                                              CONFIG, self.root, NOW + 10))
-            self.assertEqual(roll.call_count, 2)
+        data["context_window"] = {"used_percentage": 99}
+        data["rate_limits"] = {"five_hour": {"used_percentage": 99}}
+
+        def show():
+            return r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
+
+        self.assertIsNone(show())
+        data["context_window"]["used_percentage"] = 100
+        first = show()
+        self.assertEqual(first[0], "Context 100%")
+        self.assertEqual(show(), first)
+        self.candidates(message("user", "Next message", uuid="next"))
+        self.assertIsNone(show())
+        data["rate_limits"]["five_hour"]["used_percentage"] = 100
+        second = show()
+        self.assertEqual(second[0], "5h 100%")
+        self.assertNotEqual(second[1], first[1])
+
+    def test_question_waiting_joke_only_changes_at_next_threshold(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        self.candidates(message("user", "Help me pick an approach.", uuid="prompt-1"),
+                        message("assistant", "Which one?", uuid="reply"))
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 59))
+        first = r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 60)
+        self.assertEqual(first[0], "Question waiting 1m")
+        self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 240), first)
+        later = r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 300)
+        self.assertEqual(later[0], "Question waiting 5m")
 
     def test_git_branch_reports_detached_commit_and_ahead_behind(self):
         with patch.object(r.subprocess, "run") as run:

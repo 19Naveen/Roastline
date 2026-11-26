@@ -106,9 +106,7 @@ class InstallerTests(unittest.TestCase):
         hook = self.home / "hook.py"
 
         def run(mode, payload):
-            driver = ("import secrets, runpy, sys; secrets.randbelow = lambda _: 0; "
-                      "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
-            proc = subprocess.run([sys.executable, "-I", "-c", driver, str(hook), mode], input=payload,
+            proc = subprocess.run([sys.executable, "-I", str(hook), mode], input=payload,
                                   capture_output=True, timeout=10, env=self.env)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             return proc.stdout

@@ -10,7 +10,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 NUDGE = (
-    "Optional Roastline moment for this user turn only. Do the user's actual work first. "
+    "Roastline is available for this user turn. Do the user's actual work first. "
     "If something genuinely funny happened in this conversation (e.g. asking for a "
     "TL;DR of an already short TL;DR), follow the roastline skill's 'One-off session "
     "roasts' workflow using the token {token}. Tone: {tone}. If the skill isn't "
@@ -48,16 +48,16 @@ def main(argv):
         now = time.time()
         if argv == ["prompt"]:
             source = data.get("prompt_source") or data.get("promptSource")
-            if source and source not in ("typed", "queued"):
+            if config.get("auto_jokes") is False or (source and source not in ("typed", "queued")):
                 return 0
             token = runtime.offer_roast(data, config, HERE, now)
-            if token and config.get("auto_jokes") is not False:
+            if token:
                 sys.stdout.write(json.dumps({"hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": NUDGE.format(token=token, tone=config["tone"]),
                 }}))
         else:
-            runtime.finish_roast(data, config, HERE, runtime.HERE / "roasts", now)
+            runtime.finish_roast(data, HERE, now)
     except Exception:
         pass  # never block a user prompt or continue a finished response
     return 0

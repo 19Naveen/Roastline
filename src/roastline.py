@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -55,8 +55,7 @@ TAIL_BYTES = 600_000
 MAX_PERSONAL = 20  # per trigger and tone
 MAX_ROAST_WIDTH = 100
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-ROAST_CHANCE = 6
-QUIET_TURNS = 4
+USAGE_THRESHOLDS = ((100, "usage_full"), (95, "usage_critical"), (80, "usage_high"), (50, "usage_half"))
 OFFER_TTL = 1800
 MAX_TURN_SESSIONS = 50
 SGR = re.compile(r"\x1b\[[0-9;:]*m")
@@ -234,8 +233,7 @@ def usage_trigger(data):
     if not candidates:
         return None
     name, percent, _ = max(candidates, key=lambda item: item[1])
-    for threshold, key in ((100, "usage_full"), (95, "usage_critical"),
-                           (80, "usage_high"), (50, "usage_half")):
+    for threshold, key in USAGE_THRESHOLDS:
         if percent >= threshold:
             return key, "{} {}%".format(name, min(100, int(percent)))
     return None
@@ -296,6 +294,23 @@ def wait_label(seconds):
     return "{}h{:02d}m".format(*divmod(mins, 60)) if mins >= 60 else "{}m".format(mins)
 
 
+def waiting_trigger(row, content, now):
+    if row["type"] != "assistant":
+        return None
+    tools = [block for block in blocks_of(content) if block["type"] == "tool_use"]
+    if any(block.get("name") != "AskUserQuestion" for block in tools):
+        return None
+    ts = timestamp(row.get("timestamp"))
+    age = now - ts if ts is not None else 0
+    question = bool(tools) or text_of(content).rstrip().endswith("?")
+    if question and age >= 60:
+        key = "question_ghosted" if age >= 1800 else "question_late" if age >= 300 else "question_wait"
+        return key, "Question waiting " + wait_label(age)
+    if not question and age >= 900:
+        return ("idle_long" if age >= 3600 else "idle"), "Idle " + wait_label(age)
+    return None
+
+
 # Messages the user sent: typed at the prompt, or queued while Claude was busy.
 # Tool results and other internal turns are "user" rows too, without a source.
 PROMPT_SOURCES = ("typed", "queued")
@@ -327,20 +342,9 @@ def conversation_triggers(path, now):
         return []
     candidates = []
     prompts = [(i, row, c) for i, (row, c) in enumerate(rows) if is_prompt(row)]
-    row, content = rows[-1]
-    tools = [block for block in blocks_of(content) if block["type"] == "tool_use"]
-    asked = any(block.get("name") == "AskUserQuestion" for block in tools)
-    running = any(block.get("name") != "AskUserQuestion" for block in tools)
-    ts = timestamp(row.get("timestamp"))
-    age = now - ts if ts is not None else 0
-    if row["type"] == "assistant" and not running:
-        question = asked or text_of(content).rstrip().endswith("?")
-        if question and age >= 60:
-            key = "question_ghosted" if age >= 1800 else "question_late" if age >= 300 else "question_wait"
-            candidates.append((key, "Question waiting " + wait_label(age)))
-        elif not question and age >= 900:
-            key = "idle_long" if age >= 3600 else "idle"
-            candidates.append((key, "Idle " + wait_label(age)))
+    waiting = waiting_trigger(*rows[-1], now)
+    if waiting:
+        candidates.append(waiting)
     if not prompts:
         return candidates
     index, _, last = prompts[-1]
@@ -396,8 +400,8 @@ def choose_trigger(data, config, now):
     return max(candidates, key=lambda candidate: TRIGGERS[candidate[0]])
 
 
-def choose_roast(data, config, root, pack_dir, now, candidate=None):
-    trigger, reason = candidate or choose_trigger(data, config, now)
+def choose_roast(data, config, root, pack_dir, now):
+    trigger, reason = choose_trigger(data, config, now)
     tone = config["tone"]
     pack = load_pack(pack_dir / (tone + ".json"), tone)
     stock = pack[trigger]
@@ -433,14 +437,17 @@ def prompt_digest(text):
     return digest(" ".join(text.split()))
 
 
-def current_prompt(path, require_reply=False):
-    """Identity of the latest real user turn; tool results never advance it."""
+def transcript_rows(path):
     if not isinstance(path, str) or not path:
-        return None
+        return []
     try:
-        rows = bounded_rows(path)
+        return bounded_rows(path)
     except (OSError, ValueError, RecursionError):
-        return None
+        return []
+
+
+def current_prompt(rows, require_reply=False):
+    """Identity of the latest real user turn; tool results never advance it."""
     prompts = ((i, row, content) for i, (row, content) in reversed(list(enumerate(rows)))
                if is_prompt(row))
     latest = next(prompts, None)
@@ -507,10 +514,6 @@ def remember(records, key):
     return record
 
 
-def cool(record, turn):
-    return turn - record.get("last_roast", -QUIET_TURNS - 1) > QUIET_TURNS
-
-
 def live_offer(offer, now):
     return offer is not None and 0 <= now - offer["at"] <= OFFER_TTL
 
@@ -520,10 +523,9 @@ def sync_prompt(record, prompt, now):
         return
     previous = record.get("key")
     record["key"] = prompt[0]
-    record["turn"] = record.get("turn", 0) + 1
     record.pop("roast", None)
+    record.pop("event_roast", None)
     record.pop("decided", None)
-    record.pop("usage", None)
     offer = record.pop("offer", None)
     record.pop("active", None)
     if (live_offer(offer, now) and offer["after"] == previous == prompt[3]
@@ -534,14 +536,14 @@ def sync_prompt(record, prompt, now):
 
 
 def offer_roast(data, config, root, now):
-    """Offer one lottery result, confirmed later against the typed/queued transcript row."""
+    """Give Claude permission to roast this turn, confirmed against the transcript."""
     key, path, text = session_key(data), data.get("transcript_path"), data.get("prompt")
     if (not key or not isinstance(path, str) or not 0 < len(path) <= 4096
             or not isinstance(text, str) or not text.strip()):
         return None
     text_key = prompt_digest(text)
     with turn_state(root) as records:
-        prompt = current_prompt(path)
+        prompt = current_prompt(transcript_rows(path))
         record = remember(records, key)
         sync_prompt(record, prompt, now)
         # Some versions log the user row just before sending the hook.
@@ -552,12 +554,7 @@ def offer_roast(data, config, root, now):
         previous = record.get("offer")
         if live_offer(previous, now) and previous["after"] == record.get("key") and previous["text"] == text_key:
             return None
-        turn = record.get("turn", 0) + (not already_logged)
-        # Even a speculative hook notification cannot reroll the same turn slot.
-        if record.get("roll_turn") != turn:
-            record["roll_turn"] = turn
-            record["roll_won"] = cool(record, turn) and secrets.randbelow(ROAST_CHANCE) == 0
-        token = secrets.token_hex(16) if record["roll_won"] and cool(record, turn) else None
+        token = secrets.token_hex(16)
         offer = {"at": now, "after": record.get("key"), "text": text_key, "token": token,
                  "tone": config["tone"], "path": path}
         if already_logged:
@@ -568,15 +565,10 @@ def offer_roast(data, config, root, now):
         return token
 
 
-def set_turn_roast(record, roast, tone):
-    record["roast"] = [tone, *roast]
-    record["last_roast"] = record.get("turn", 0)
-
-
 def eligible_offer(record, config, now):
     offer = record.get("active")
     if (live_offer(offer, now) and offer["token"] and offer["tone"] == config["tone"]
-            and not record.get("roast") and cool(record, record.get("turn", 0))):
+            and not record.get("roast")):
         return offer
     return None
 
@@ -593,60 +585,80 @@ def submit_roast(token, line, config, root, now):
                             if item and item["token"] == token), None)
             if matched is None:
                 continue
-            prompt = current_prompt(matched["path"])
+            prompt = current_prompt(transcript_rows(matched["path"]))
             sync_prompt(record, prompt, now)
             offer = eligible_offer(record, config, now)
             if prompt is None or offer is None or offer["token"] != token:
                 return False
-            set_turn_roast(record, ("", line), config["tone"])
+            record["roast"] = [config["tone"], "", line]
             record.pop("active", None)
             return True
     return False
 
 
-def finish_roast(data, config, root, pack_dir, now):
-    """End an offer; if no custom line was submitted, a relevant stored joke can win."""
+def finish_roast(data, root, now):
+    """Close the offer. An uneventful chat turn can stay quiet."""
     key = session_key(data)
     if not key or data.get("stop_hook_active"):
         return
     with turn_state(root) as records:
         record = records.get(key)
-        prompt = current_prompt(data.get("transcript_path"), require_reply=True)
+        prompt = current_prompt(transcript_rows(data.get("transcript_path")), require_reply=True)
         if record is None or prompt is None:
             return
         sync_prompt(record, prompt, now)
-        offer = eligible_offer(record, config, now)
         record.pop("active", None)
-        if offer is None:
-            return
-        candidate = choose_trigger(data, config, now)
-        usage = record.get("usage")
-        if usage and TRIGGERS[usage[0]] > TRIGGERS[candidate[0]]:
-            candidate = tuple(usage)
-        if candidate[0] not in ("default", "effort"):
-            set_turn_roast(record, choose_roast(data, config, root, pack_dir, now, candidate), config["tone"])
+
+
+def event_triggers(data, rows, record, now):
+    """Report transitions only; a steady value cannot pick a new joke on refresh."""
+    candidates = []
+    effort = get(data, "effort", "level")
+    if effort in EFFORT_LEVELS:
+        previous = record.get("effort")
+        record["effort"] = effort
+        if previous in EFFORT_LEVELS and effort != previous:
+            candidates.append(("effort", "Effort " + effort))
+    usage = record.setdefault("usage_levels", {})
+    for name, percent, _ in usage_fields(data):
+        last = usage.get(name)
+        usage[name] = percent
+        for threshold, trigger in USAGE_THRESHOLDS:
+            if threshold <= percent and (last < threshold if last is not None else threshold == 100):
+                candidates.append((trigger, "{} {}%".format(name, min(100, int(percent)))))
+                break
+    if rows:
+        row, content = rows[-1]
+        waiting = waiting_trigger(row, content, now)
+        if waiting:
+            marker = [row.get("uuid") or row.get("timestamp"), waiting[0]]
+            if marker != record.get("waiting"):
+                record["waiting"] = marker
+                candidates.append(waiting)
+    return candidates
 
 
 def visible_roast(data, config, root, pack_dir, now):
     key = session_key(data)
     if not key:
         return None
-    effort = get(data, "effort", "level")
     with turn_state(root) as records:
-        prompt = current_prompt(data.get("transcript_path"))
+        rows = transcript_rows(data.get("transcript_path"))
+        prompt = current_prompt(rows)
         record = remember(records, key)
         sync_prompt(record, prompt, now)
-        if prompt is not None and eligible_offer(record, config, now):
-            record["usage"] = usage_trigger(data)
-        previous = record.get("effort")
-        if effort in EFFORT_LEVELS:
-            record["effort"] = effort
-            if (previous in EFFORT_LEVELS and previous != effort
-                    and not record.get("roast") and cool(record, record.get("turn", 0))):
-                stored = choose_roast(data, config, root, pack_dir, now, ("effort", "Effort " + effort))
-                set_turn_roast(record, stored, config["tone"])
-                record.pop("active", None)
-        roast = record.get("roast")
+        events = event_triggers(data, rows, record, now)
+        if events:
+            # A quota reaching 100% takes priority over simultaneous events.
+            trigger, reason = max(events, key=lambda item: (item[0] == "usage_full", TRIGGERS[item[0]]))
+            tone = config["tone"]
+            stock = load_pack(pack_dir / (tone + ".json"), tone)[trigger]
+            indices = record.setdefault("event_indices", {})
+            slot = tone + ":" + trigger
+            index = indices[slot] + 1 if slot in indices else secrets.randbelow(len(stock))
+            indices[slot] = index % len(stock)
+            record["event_roast"] = [tone, reason, stock[indices[slot]]]
+        roast = record.get("event_roast") or record.get("roast")
         if roast and roast[0] == config["tone"] and (prompt is not None or not record.get("key")):
             return tuple(roast[1:])
     return None
@@ -656,7 +668,7 @@ def clear_live_roasts(root):
     """Don't revive a queued or displayed joke after a pause or tone change."""
     with turn_state(root) as records:
         for record in records.values():
-            for field in ("offer", "active", "roast", "effort"):
+            for field in ("offer", "active", "roast", "event_roast", "effort", "usage_levels", "waiting"):
                 record.pop(field, None)
 
 

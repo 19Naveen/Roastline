@@ -11,6 +11,7 @@ Roastline occasionally shows one joke in the Claude Code statusline, not the cha
 ## One-off session roasts
 
 Use this workflow only for a fresh token from the Roastline hook on the current turn.
+The token means a roast is available. You decide if the conversation earned one.
 Do the user's work first. If there's a specific, funny moment in the conversation,
 write one short punchline about the behavior, not the person. Repeatedly asking for a
 shorter version of an already short answer may be funny; asking for a summary once

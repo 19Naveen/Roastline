@@ -1,8 +1,8 @@
 # Roastline
 
 **Your Claude Code statusline, lightly toasted.** Roastline adds one timely joke to
-your terminal without replacing the statusline you already use. It ships 40 SFW
-roasts and 40 opt-in NSFW roasts, with two jokes per trigger in each pack.
+your terminal without replacing the statusline you already use. It ships SFW
+and opt-in NSFW joke packs with several variations for events.
 
 ```text
         (  )  (  )
@@ -133,27 +133,24 @@ tone, and your saved jokes.
 
 ## When roasts appear
 
-Most messages show no roast. After at least four quiet user messages since the
-last roast, eligible user turns have a one-in-six chance to get a roast slot.
-Background updates, agent replies, and tool calls don't create visible roasts.
-An observed change to the reasoning level can use an effort joke from the stored
-pack without rolling the dice, subject to the same quiet gap.
+**Chat:** Claude decides whether to write a one-off line about the current
+conversation. The prompt hook makes the `/roastline` skill available for that
+turn. There is no lottery, cooldown, or stock fallback. A submitted joke is
+shown in the statusline until the next user message. One-off jokes don't
+change the personal bank; you can still inspect it with `roastline --personal`.
 
-On a selected turn, the prompt hook gives Claude the option to write one
-conversation-specific line through the `/roastline` skill. It appears in the
-statusline, not in the reply, and expires on the next user message. At the end
-of the turn, if Claude didn't submit a line, the `Stop` hook can pick a stored
-joke that fits. If nothing fits, the statusline stays quiet. One-off jokes don't
-change the personal bank; ask Claude to refresh it explicitly or inspect it
-with `roastline --personal`.
+**Events:** An observed reasoning-level change, usage crossing 50%, 80%, 95%,
+or 100%, or a new waiting or idle threshold uses a stock joke. Variations rotate
+when the same event happens again. An event joke takes precedence over a chat
+joke on that turn, and reaching 100% takes priority over any simultaneous
+event. Events are checked when Claude refreshes the statusline; an event-driven
+statusline won't wake up just because an idle threshold passed.
 
 `roastline --pause` silences roasts and their hooks. Uninstall removes
 Roastline's hooks and leaves your own hooks intact.
 
-The built-in packs cover 20 trigger types per tone: ignored questions,
-idle breaks, repeated prompts, tiny prompts, all caps, tool marathons, rapid
-messaging, long sessions, late nights, context and rate limit thresholds,
-effort, and ordinary sessions. There's one joke on screen at a time.
+There's one joke on screen at a time. If Claude skips a chat roast and no new
+event occurs, the statusline shows only its normal information.
 
 The renderer reads a bounded tail of the local Claude transcript to infer
 interaction patterns. It never quotes raw prompts or makes network calls.
