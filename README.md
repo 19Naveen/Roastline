@@ -133,11 +133,28 @@ tone, and your saved jokes.
 
 ## When roasts appear
 
-**Chat:** Claude decides whether to write a one-off line about the current
-conversation. The prompt hook makes the `/roastline` skill available for that
-turn. There is no lottery, cooldown, or stock fallback. A submitted joke is
-shown in the statusline until the next user message. One-off jokes don't
-change your saved jokes.
+**Chat:** On each message you send (including one that is just a slash command, such as
+`/pstack:bro`), the prompt hook hands Claude a one-time token
+and the exact command to run. Claude submits a one-line roast early in the turn,
+alongside its first tool call, so it's on your statusline while it works, then
+carries on with the task. If the task drags on it can replace the joke once (for
+example, *"I could've built the Great Wall of China in the time this refactor is
+taking"*); a third submission is refused. The jokes are about what's really going
+on: your prompting, the project, the task or bug, the tech stack. Claude skips
+trivial messages ("ok", "yes") and anything where you're stressed or asked for no
+jokes. In the NSFW tone the joke has to swear: a clean joke is refused with a message,
+doesn't use up the slot, and Claude is told to rewrite it once with profanity. There is
+no lottery, cooldown, or stock fallback. The joke shows until your
+next message and is never saved. It never goes in the chat reply.
+
+**Permissions:** In Claude Code's default mode a command like that would ask you to
+approve it every time, so the installer adds a `PreToolUse` hook (limited to
+`roastline ...` commands). It pre-approves only Roastline's own joke commands, in
+their exact documented shape, and only while they carry a token minted for the
+current turn. Anything else, including any other `roastline` command, goes through
+Claude Code's normal approval, and your own deny and ask rules still apply. Set
+`"auto_jokes": false` in `<config dir>/roastline/config.json` to turn off the offers
+and the pre-approval together.
 
 **Events:** An observed reasoning-level change, usage crossing 50%, 80%, 95%,
 or 100%, or a new waiting or idle threshold shows a joke for that event. The packs
@@ -150,7 +167,8 @@ just because an idle threshold passed.
 
 **Saved event jokes:** When one of your habits keeps recurring and Claude has a
 genuinely good line for an event, it can quietly save it with
-`roastline --add-roasts EVENT`, in the active tone. Nothing is saved for a one-off
+`roastline --add-roasts EVENT --token TOKEN`, in the active tone. (By hand,
+`roastline --add-roasts EVENT` needs no token.) Nothing is saved for a one-off
 or a duplicate, and each event keeps its 20 most recent jokes per tone. Inspect
 them with `roastline --personal`; `roastline --triggers` lists the events. Jokes
 saved under the older behaviour triggers (such as `short` or `caps`) no longer

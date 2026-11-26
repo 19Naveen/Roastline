@@ -22,7 +22,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.6.0"
+VERSION = "1.7.2"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -245,18 +245,22 @@ def shell_command(shell, *parts):
     return " ".join(shlex.quote(word) for word in words)
 
 
-# Claude Code hooks for occasional session roasts.
+# Claude Code hooks for session roasts: event -> (hook.py argument, extra group/handler fields).
+# The PreToolUse hook only runs for `roastline ...` commands, and only ever approves
+# Roastline's own joke commands that carry a live token (see approve_command).
 HOOK_EVENTS = {
-    "UserPromptSubmit": "prompt",
-    "Stop": "stop",
+    "UserPromptSubmit": ("prompt", {}, {}),
+    "Stop": ("stop", {}, {}),
+    "PreToolUse": ("pretool", {"matcher": "Bash"}, {"if": "Bash(roastline *)"}),
 }
 
 
 def hook_groups(shell, hook_path):
     groups = {}
-    for event, mode in HOOK_EVENTS.items():
+    for event, (mode, group_fields, handler_fields) in HOOK_EVENTS.items():
         command = shell_command(shell, python_path(), "-I", hook_path, mode)
-        groups[event] = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+        handler = {"type": "command", "command": command, "timeout": 10, **handler_fields}
+        groups[event] = {**group_fields, "hooks": [handler]}
     return groups
 
 
@@ -613,7 +617,7 @@ def install(home, args):
                                                 "add a statusline above Claude's footer", home.settings))
         message("PLAN", "Would install both roast packs and the global /roastline skill")
         if (HERE / "src/hook.py").is_file():
-            message("PLAN", "Would add prompt and completion hooks for occasional roasts")
+            message("PLAN", "Would add prompt, completion and tool-approval hooks for roasts")
         return
     shell = resolve_shell()
     runtime = load_runtime(HERE / "src/roastline.py")
@@ -680,7 +684,9 @@ def install(home, args):
             rollback.pop_all()
     message("OK", "Global /roastline skill installed")
     if next_state.get("hooks"):
-        message("OK", "Occasional session roasts enabled (UserPromptSubmit and Stop hooks)")
+        message("OK", "Session roasts enabled (UserPromptSubmit, Stop and PreToolUse hooks)")
+        message("NOTE", "The PreToolUse hook pre-approves only Roastline's own joke commands, and only "
+                        "with a token minted for the current turn. Set \"auto_jokes\": false to turn it off.")
     message("OK", "Startup check passed; {}".format("existing command preserved" if present else
                                                     "Roastline statusline enabled"))
     helper_cmd = shell_command(shell, python_path(), "-I", home.root / "install.py")
@@ -798,6 +804,9 @@ def manage(home, args):
         if args.session_roast:
             raw = sys.stdin.buffer.read(1025)
             line = json.loads(raw) if len(raw) <= 1024 else None
+            if runtime.lacks_swearing(line, options["tone"]):
+                raise InstallError("The tone is NSFW, so the joke has to swear. Rewrite it with real "
+                                   "profanity and run the command once more. Nothing was saved.")
             if not runtime.submit_roast(args.session_roast, line, options, home.root, time.time()):
                 raise InstallError("No current roast slot, or invalid joke. Nothing was saved.")
             message("OK", "Queued one roast for this turn")
@@ -830,6 +839,8 @@ def manage(home, args):
             return
         if args.add_roasts:
             trigger = args.add_roasts
+            if args.token and not runtime.live_token(args.token, home.root, time.time()):
+                raise InstallError("That token is not for a live roast offer. Nothing was saved.")
             if trigger not in runtime.TRIGGERS:
                 raise InstallError("Unknown event. Use --triggers to list the events.")
             data = sys.stdin.buffer.read(4097)
@@ -983,6 +994,7 @@ def main(argv=None):
     action.add_argument("--replace-personal", action="store_true", help="replace the active tone's saved event jokes from JSON stdin")
     action.add_argument("--session-roast", metavar="TOKEN", help="submit one JSON string for an offered chat roast")
     action.add_argument("--triggers", action="store_true", help="list the events that have jokes")
+    parser.add_argument("--token", metavar="TOKEN", help="with --add-roasts: tie the save to a live roast offer")
     parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
                         help="open the tone picker or select sfw/nsfw directly")
     parser.add_argument("--non-interactive", action="store_true", help="do not prompt")
@@ -1012,6 +1024,8 @@ def main(argv=None):
     if args.tone and (args.status or args.triggers or args.uninstall or args.update
                       or args.add_roasts or args.personal or args.replace_personal or args.session_roast):
         parser.error("--tone is for install, tone switching, pause or resume")
+    if args.token and not args.add_roasts:
+        parser.error("--token is only for --add-roasts")
     # An installed helper/launcher belongs to its own profile. Do not let a
     # different session's CLAUDE_CONFIG_DIR redirect --uninstall or --update.
     home = Home(config_dir=None if bundle else HERE.parent)

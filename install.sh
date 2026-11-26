@@ -2,7 +2,7 @@
 # curl -fsSL https://raw.githubusercontent.com/19Naveen/Roastline/main/install.sh | bash
 set -euo pipefail
 
-VERSION=1.6.0
+VERSION=1.7.2
 REPO=19Naveen/Roastline
 
 note() { printf '  [%s] %s\n' "$1" "$2"; }

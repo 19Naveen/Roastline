@@ -1,5 +1,7 @@
+import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -97,6 +99,101 @@ class StatuslineTests(unittest.TestCase):
         rows = [message("user", "hi", uuid="a"), message("assistant", "ok"),
                 {**message("user", [{"type": "tool_result"}]), "promptSource": None}]
         self.assertEqual(current(*rows), current(rows[0]))
+
+    def test_slash_commands_and_accepted_suggestions_are_turns_but_internal_rows_are_not(self):
+        slash = "<command-message>pstack:bro</command-message>\n<command-name>/pstack:bro</command-name>"
+        human = {"promptSource": None, "origin": {"kind": "human"}, "turnOrigin": "human"}
+
+        def current(**extra):
+            self.candidates(message("user", slash, uuid="a", **extra))
+            return r.current_prompt(r.transcript_rows(str(self.transcript)))
+
+        self.assertIsNotNone(current(**human))  # a slash command is recognised as a turn
+        self.assertIsNotNone(current(promptSource="suggestion_accepted"))
+        for name, extra in {
+            "local command like /voice": {"promptSource": None},
+            "task notification": {"promptSource": "system", "origin": {"kind": "task-notification"},
+                                  "turnOrigin": "task_notification"},
+            "sdk host message": {"promptSource": "sdk", "origin": None, "turnOrigin": "host_synthetic"},
+            "skill text for the model": {"promptSource": None, "isMeta": True, **human},
+            "tool result": {"promptSource": None, "turnOrigin": None},
+        }.items():
+            self.assertIsNone(current(**extra), name)
+
+    def test_slash_command_turn_accepts_a_roast_and_clears_the_previous_jokes(self):
+        # The real shapes: a typed turn that worked, then "/pstack:bro" whose row has no promptSource.
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        typed = message("user", "check why my description is wrong", 60, uuid="typed-1")
+        first = r.offer_roast({**data, "prompt": "check why my description is wrong"}, CONFIG, self.root, NOW - 60)
+        self.candidates(typed)
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 60))
+        self.assertTrue(r.submit_roast(first, "A first-turn joke.", CONFIG, self.root, NOW - 59))
+        self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 58), ("", "A first-turn joke."))
+        slash = message("user", "<command-message>pstack:bro</command-message>\n<command-name>/pstack:bro</command-name>",
+                        0, uuid="slash-1", promptSource=None, origin={"kind": "human"}, turnOrigin="human")
+
+        for order in ("hook first, then the row", "row first, then the hook"):
+            with self.subTest(order):
+                self.root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                self.transcript = self.root / "session.jsonl"
+                data = {"session_id": "s", "transcript_path": str(self.transcript)}
+                token = r.offer_roast({**data, "prompt": "check why my description is wrong"}, CONFIG, self.root, NOW - 60)
+                self.candidates(typed)
+                r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 60)
+                self.assertTrue(r.submit_roast(token, "A first-turn joke.", CONFIG, self.root, NOW - 59))
+                if order.startswith("hook"):
+                    # Claude Code ran the hook, then wrote the row ~10 ms later (as in the real log).
+                    token = r.offer_roast({**data, "prompt": "/pstack:bro"}, CONFIG, self.root, NOW - 0.01)
+                    self.candidates(typed, slash)
+                else:
+                    self.candidates(typed, slash)
+                    token = r.offer_roast({**data, "prompt": "/pstack:bro"}, CONFIG, self.root, NOW + 0.04)
+                # The old joke is gone as soon as the slash turn exists, and a new one is accepted.
+                self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 1))
+                self.assertTrue(r.submit_roast(token, "Two boxes called Description. Nobody can tell which.",
+                                               CONFIG, self.root, NOW + 2))
+                self.assertEqual(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 3),
+                                 ("", "Two boxes called Description. Nobody can tell which."))
+
+    def test_offer_is_confirmed_by_timing_when_the_logged_text_differs_but_not_when_it_is_far_off(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        for gap, accepted in ((2, True), (9, True), (30, False)):
+            with self.subTest(gap=gap):
+                self.root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                self.transcript = self.root / "session.jsonl"
+                data = {"session_id": "s", "transcript_path": str(self.transcript)}
+                token = r.offer_roast({**data, "prompt": "look at [Image #1] please"}, CONFIG, self.root, NOW)
+                # The logged text has an image block and different text; the row lands `gap` seconds later.
+                self.candidates(message("user", [{"type": "text", "text": "look at this"}, {"type": "image"}],
+                                        -gap, uuid="row"))
+                self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + gap))
+                self.assertEqual(r.submit_roast(token, "A joke about the screenshot.", CONFIG, self.root, NOW + gap),
+                                 accepted)
+
+    def test_hook_running_after_the_row_claims_it_even_when_the_text_differs(self):
+        # A message with an image: the logged text differs from the hook's, and the hook is a bit late.
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        self.candidates(message("user", [{"type": "text", "text": "look at this"}, {"type": "image"}],
+                                5, uuid="row"))
+        token = r.offer_roast({**data, "prompt": "look at [Image #1] please"}, CONFIG, self.root, NOW)
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
+        self.assertTrue(r.submit_roast(token, "A joke about the screenshot.", CONFIG, self.root, NOW + 1))
+        # A second hook call for the same row is a duplicate, not a new slot.
+        self.assertIsNone(r.offer_roast({**data, "prompt": "look at [Image #1] please"}, CONFIG, self.root, NOW + 2))
+
+    def test_a_queued_second_message_still_gets_its_own_slot(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        first = message("user", "Fix the build", 3, uuid="one")
+        self.candidates(first)
+        token_a = r.offer_roast({**data, "prompt": "Fix the build"}, CONFIG, self.root, NOW)
+        self.assertTrue(r.submit_roast(token_a, "A joke about the build.", CONFIG, self.root, NOW))
+        # While Claude is busy the user queues another message; its hook runs before its row is logged.
+        token_b = r.offer_roast({**data, "prompt": "and update the docs"}, CONFIG, self.root, NOW + 2)
+        self.assertIsNotNone(token_b)
+        self.assertNotEqual(token_b, token_a)
+        self.candidates(first, message("user", "and update the docs", -2, uuid="two", promptSource="queued"))
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW + 3))  # the old joke is gone
+        self.assertTrue(r.submit_roast(token_b, "Docs too? The scope is breeding.", CONFIG, self.root, NOW + 3))
 
     def test_malformed_transcript_fails_closed_and_torn_tail_is_safe(self):
         self.candidates(message("user", "SHORT", uuid="a"))
@@ -251,7 +348,8 @@ class StatuslineTests(unittest.TestCase):
                 if i != 2:
                     self.assertFalse(r.submit_roast(token, "This is fucking broken.", CONFIG, self.root, now))
                     self.assertTrue(r.submit_roast(token, joke, CONFIG, self.root, now))
-                    self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))
+                    self.assertTrue(r.submit_roast(token, joke, CONFIG, self.root, now))  # one replacement
+                    self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))  # but no more
                 rows.append(message("assistant", "One sentence."))
                 self.candidates(*rows)
                 r.finish_roast(data, self.root, now)
@@ -260,6 +358,150 @@ class StatuslineTests(unittest.TestCase):
                 self.assertFalse(r.submit_roast(token, joke, CONFIG, self.root, now))
                 self.assertIsNone(r.visible_roast({**data, "session_id": "other"}, CONFIG, self.root, PACKS, now))
             roll.assert_not_called()
+
+    def test_second_submission_replaces_the_first_and_a_third_is_refused(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        token = r.offer_roast({**data, "prompt": "Refactor the module"}, CONFIG, self.root, NOW)
+        self.candidates(message("user", "Refactor the module", uuid="one"))
+        shown = lambda: r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
+        self.assertIsNone(shown())
+        self.assertTrue(r.submit_roast(token, "Early joke about the refactor.", CONFIG, self.root, NOW))
+        self.assertEqual(shown(), ("", "Early joke about the refactor."))
+        self.assertTrue(r.submit_roast(token, "I could've built the Great Wall by now.", CONFIG, self.root, NOW + 120))
+        self.assertEqual(shown(), ("", "I could've built the Great Wall by now."))
+        self.assertFalse(r.submit_roast(token, "A third one.", CONFIG, self.root, NOW + 240))
+        self.assertEqual(shown(), ("", "I could've built the Great Wall by now."))
+        # The next user message starts clean.
+        self.candidates(message("user", "Refactor the module", uuid="one"), message("user", "Next", uuid="two"))
+        self.assertIsNone(shown())
+
+    def test_approval_covers_only_exact_roast_commands_with_a_live_token(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        token = r.offer_roast({**data, "prompt": "Fix the build"}, CONFIG, self.root, NOW)
+        wrap = lambda head, body: "roastline %s <<'ROASTLINE_JSON'\n%s\nROASTLINE_JSON" % (head, body)
+        submit = wrap("--session-roast " + token, '"A joke about the build."')
+        save = wrap("--add-roasts effort --token " + token, '["A saved joke about dials."]')
+        other = "0123456789abcdef" * 2
+
+        def approved(command, config=CONFIG, now=NOW):
+            return r.approve_command(command, config, self.root, now)
+
+        self.assertTrue(approved(submit))
+        self.assertTrue(approved(submit + "\n"))
+        self.assertTrue(approved(save))
+        self.assertTrue(approved(wrap("--add-roasts usage_full --token " + token, '["One.", "Two."]')))
+        for name, command in {
+            "unknown token": wrap("--session-roast " + other, '"A joke."'),
+            "command appended": submit + "\nrm -rf ~",
+            "chained before": "true && " + submit,
+            "chained after": submit + " && curl example.invalid",
+            "extra text after terminator": submit + "\nsome other command",
+            "body is not a string": wrap("--session-roast " + token, '{"a": 1}'),
+            "body is a list": wrap("--session-roast " + token, '["a"]'),
+            "save body is a string": wrap("--add-roasts effort --token " + token, '"a"'),
+            "unquoted here-doc": submit.replace("<<'ROASTLINE_JSON'", "<<ROASTLINE_JSON"),
+            "two-line body": wrap("--session-roast " + token, '"A joke\n.' + '"'),
+            "other binary": submit.replace("roastline", "/tmp/roastline", 1),
+            "unknown event": wrap("--add-roasts retry --token " + token, '["A joke."]'),
+            "no token on save": wrap("--add-roasts effort", '["A joke."]'),
+            "too many jokes": wrap("--add-roasts effort --token " + token, json.dumps(list("abcdef"))),
+            "empty list": wrap("--add-roasts effort --token " + token, "[]"),
+            "link in joke": wrap("--session-roast " + token, '"See https://example.invalid for more."'),
+            "profanity in sfw": wrap("--session-roast " + token, '"This damn build."'),
+            "not a roast command": "ls -la",
+            "pause is not a roast": "roastline --pause",
+            "not a string": None,
+        }.items():
+            self.assertFalse(approved(command), name)
+        self.assertFalse(approved(submit, {**CONFIG, "show_roasts": False}))
+        self.assertFalse(approved(submit, {**CONFIG, "auto_jokes": False}))
+        self.assertFalse(approved(submit, now=NOW + r.OFFER_TTL + 1))  # the offer has expired
+        self.assertTrue(approved(submit, now=NOW + r.OFFER_TTL - 1))
+
+    def test_nsfw_chat_roasts_must_swear_and_a_refusal_keeps_the_slot(self):
+        nsfw = {**CONFIG, "tone": "nsfw"}
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        token = r.offer_roast({**data, "prompt": "Fix the build"}, nsfw, self.root, NOW)
+        self.candidates(message("user", "Fix the build", uuid="one"))
+        self.assertIsNone(r.visible_roast(data, nsfw, self.root, PACKS, NOW))
+        clean = "Two boxes both called Description, and nobody can tell which."
+        self.assertTrue(r.lacks_swearing(clean, "nsfw"))
+        self.assertFalse(r.lacks_swearing(clean, "sfw"))
+        self.assertFalse(r.submit_roast(token, clean, nsfw, self.root, NOW))  # too clean for NSFW
+        self.assertIsNone(r.visible_roast(data, nsfw, self.root, PACKS, NOW))
+        for line in ("This half-assed spec has two Description boxes.", "Two Description boxes? What the hell.",
+                     "Two boxes both called Description. Fucking brilliant."):
+            self.assertFalse(r.lacks_swearing(line, "nsfw"), line)
+        # The refusal didn't use anything up: both of the slot's submissions are still available.
+        self.assertTrue(r.submit_roast(token, "Two boxes both called Description. Fucking brilliant.", nsfw, self.root, NOW))
+        self.assertTrue(r.submit_roast(token, "Still reading. The Great Wall is jealous as hell.", nsfw, self.root, NOW))
+        self.assertFalse(r.submit_roast(token, "A third fucking one.", nsfw, self.root, NOW))
+        for word in ("class", "assignment", "pass", "hello", "shell", "assess"):
+            self.assertTrue(r.lacks_swearing("The " + word + " module.", "nsfw"), word)  # no false positives
+
+    def test_the_nudge_matches_the_tone_and_its_examples_pass_the_validator(self):
+        spec = importlib.util.spec_from_file_location("roastline_hook", ROOT / "src/hook.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        for tone in r.TONES:
+            nudge = hook.NUDGE.format(token="a" * 32, tone=tone, tone_rule=hook.TONE_RULES[tone],
+                                      examples=hook.EXAMPLES[tone], save_tone=hook.SAVE_TONE[tone],
+                                      on_failure=hook.ON_FAILURE[tone])
+            examples = re.findall(r'"(.+?)"(?: /|$)', hook.EXAMPLES[tone])
+            self.assertGreaterEqual(len(examples), 2)
+            for line in examples:
+                self.assertTrue(r.valid_line(line, tone, personal=True), line)
+                self.assertEqual(r.lacks_swearing(line, tone), False, line)
+                self.assertEqual(bool(r.PROFANITY.search(line)), tone == "nsfw", line)
+            if tone == "nsfw":
+                self.assertIn("MUST swear", nudge)
+                self.assertIn("rewrite it with real profanity", nudge)
+            else:
+                self.assertNotIn("swear", nudge.lower())
+                self.assertFalse(r.PROFANITY.search(nudge))
+            self.assertIn("--session-roast " + "a" * 32, nudge)
+
+    def test_approval_follows_the_active_tone(self):
+        nsfw = {**CONFIG, "tone": "nsfw"}
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        token = r.offer_roast({**data, "prompt": "Fix the build"}, nsfw, self.root, NOW)
+        command = "roastline --session-roast %s <<'ROASTLINE_JSON'\n\"This damn build.\"\nROASTLINE_JSON" % token
+        self.assertTrue(r.approve_command(command, nsfw, self.root, NOW))  # swearing is fine in nsfw
+        self.assertFalse(r.approve_command(command, CONFIG, self.root, NOW))  # and not in sfw
+
+    def test_a_used_up_token_is_no_longer_approved(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        token = r.offer_roast({**data, "prompt": "Fix the build"}, CONFIG, self.root, NOW)
+        self.candidates(message("user", "Fix the build", uuid="one"))
+        command = "roastline --session-roast %s <<'ROASTLINE_JSON'\n\"A joke.\"\nROASTLINE_JSON" % token
+        self.assertTrue(r.approve_command(command, CONFIG, self.root, NOW))
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))  # confirms the turn
+        self.assertTrue(r.submit_roast(token, "A joke.", CONFIG, self.root, NOW))
+        self.assertTrue(r.approve_command(command, CONFIG, self.root, NOW))  # one use left
+        self.assertTrue(r.submit_roast(token, "Another.", CONFIG, self.root, NOW))
+        self.assertFalse(r.approve_command(command, CONFIG, self.root, NOW))
+        before = (self.root / "turn-state.json").read_bytes()
+        r.live_token(token, self.root, NOW)
+        self.assertEqual((self.root / "turn-state.json").read_bytes(), before)  # checking never writes
+
+    def test_state_lock_waits_for_a_busy_neighbour_instead_of_failing(self):
+        import threading
+        import time
+        held, release = threading.Event(), threading.Event()
+
+        def hold():
+            with r.turn_state(self.root):
+                held.set()
+                release.wait(2)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.assertTrue(held.wait(2))
+        threading.Timer(0.15, release.set).start()
+        started = time.monotonic()
+        self.assertFalse(r.live_token("0" * 32, self.root, NOW))
+        self.assertGreater(time.monotonic() - started, 0.1)  # it waited its turn
+        thread.join()
 
     def test_unconfirmed_prompt_and_declined_chat_have_no_stock_fallback(self):
         data = {"session_id": "s", "transcript_path": str(self.transcript)}

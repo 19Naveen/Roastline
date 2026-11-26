@@ -9,32 +9,59 @@ argument-hint: "[add | status | pause | resume | sfw | nsfw | update]"
 Roastline shows at most one joke at a time in the Claude Code statusline, never in the
 chat. There are two kinds, and you write the personal ones:
 
-- **Chat roasts** are one-off lines about this conversation. You decide if one is earned.
+- **Chat roasts** are one-off lines about this conversation, submitted early in the turn.
 - **Event jokes** are stock lines (plus any the user has saved) that Roastline shows when
   an event happens. You can grow the saved ones from what you see in the user's habits.
 
 ## One-off chat roasts
 
-Use this workflow only for a fresh token from the Roastline hook on the current turn.
-The token means a roast is available. You decide if the conversation earned one.
-Do the user's work first. If there's a specific, funny moment in the conversation,
-write one short punchline about the behavior, not the person. Repeatedly asking for a
-shorter version of an already short answer may be funny; asking for a summary once
-is not. If the joke feels forced, skip it.
+On each user message the Roastline hook gives you a token and the exact command. This
+section is the longer version of that note.
 
-- Use only context already visible in this conversation. Respect requests to stop.
-  Don't read history, files or transcripts for material.
-- Use the tone in the hook, keep the line to about 75 characters, and omit any label.
-  NSFW can use profanity, but no slurs, threats, or attacks on sensitive traits.
-  Don't quote prompts, code, names, links, paths, credentials, or other identifiers.
-- Send the line as a **JSON string on stdin**, using the exact token from the hook.
-  Treat the joke as data, not shell code. Submit at most once and do not retry a
-  rejected or expired token. Skip if the tool isn't available or needs approval;
-  never interrupt the user for a joke. Don't mention it in the reply.
+**When.** Submit before your first reply or tool call, alongside your first tool call is
+fine, so the joke is on the statusline while you work. Then carry on with the task as
+normal. If the task drags on, you may replace it once with a fresh line about how long
+it's taking (same command, same token); a third submission is refused. Skip it for a
+trivial message ("ok", "yes"), if the user is stressed or chasing an incident, or if they
+asked for no jokes.
+
+**What.** One funny roast, about 75 characters, about what is really going on:
+
+- *Prompting:* "Seven 'quick' follow-ups later, this prompt has a sequel and a spin-off."
+- *The project:* "A 'quick fix' that already has a roadmap and a steering committee."
+- *The task or bug:* "The bug vanished the moment I opened the debugger. Shy, not fixed."
+- *The tech stack:* "Fourteen microservices to render one button. The button is flattered."
+- *A long task, mid-way:* "I could've built the Great Wall of China in the time this refactor is taking."
+
+In the NSFW tone the joke **must swear**; a clean one is rejected. Put real profanity
+in the punchline:
+
+- "This 'tiny tweak' touches fourteen fucking files. Ambitious little shit."
+- "I could've built the fucking Great Wall of China by now."
+- "The bug vanished when I opened the debugger. Shy bastard."
+- "Two inputs both named Description, and nobody knows which is which. Fucking brilliant."
+
+**How to make it funny.** Be specific to this session, not generic. Exaggerate the scale.
+Make an unexpected comparison, or call back to something that happened earlier in the
+conversation. Put the punchline last and don't explain it. Don't reuse a target or
+format you've already used in this conversation. Roast the situation (the scope, the
+stack, the bug, the process), never the person's character, ability or anything sensitive.
+
+- Use only context already visible in this conversation. Don't read history, files or
+  transcripts for material. Name technologies freely, but never private names, code,
+  paths, links, credentials or other identifiers. NSFW can use profanity, but no slurs
+  or threats. Respect requests to stop.
+- Send the line as a **single-line JSON string** on a quoted here-doc, with the exact
+  token from the hook. Treat the joke as data, not shell code. The hook pre-approves
+  exactly this command shape while the token is live, so don't add anything else to the
+  command. If it asks for approval anyway, skip it and don't retry. If the tone is NSFW
+  and the command fails because the joke doesn't swear, rewrite it with real profanity and
+  run it once more (a rejected joke doesn't use up the slot). Any other failure: skip it.
+  Don't mention the joke in the reply.
 
 ```bash
 roastline --session-roast TOKEN_FROM_CURRENT_HOOK <<'ROASTLINE_JSON'
-"A TL;DR of a TL;DR. We’re compressing air now."
+"A TL;DR of a TL;DR. We're compressing air now."
 ROASTLINE_JSON
 ```
 
@@ -60,17 +87,18 @@ thing" keeps growing the scope, a `usage_full` line could be *"The AI survived t
 task. 'One more thing' is what killed it."* Don't write the reason or a label; Roastline
 adds it.
 
-- Save one joke (up to five) with `roastline --add-roasts EVENT`, as a **JSON array
-  on stdin**, in the active tone. Use `roastline --status` to read the tone.
-- Same rules as chat roasts: use only the visible conversation, keep it to about 75
-  characters, no profanity in SFW, no slurs or threats in NSFW, nothing about the
-  person's character, and no quotes, names, links, paths, code or other identifiers.
-- Do it quietly after the user's request is done. Never mention it, never ask for
-  approval, and treat the joke as data, not shell code. If the command fails or needs
-  approval, skip it; don't retry or interrupt the user.
+- Save one joke (up to five) with `roastline --add-roasts EVENT --token TOKEN`, as a
+  **single-line JSON array** on a quoted here-doc, in the active tone, using the token
+  from the hook for the current turn. The token only proves the save belongs to a live
+  turn; it is not used up.
+- Same rules as chat roasts: use only the visible conversation, about 75 characters,
+  no profanity in SFW, swearing in NSFW, no slurs or threats, nothing about the person's
+  character, and no private names, code, paths or other identifiers.
+- Do it quietly after the user's request is done. Never mention it or ask for approval.
+  If the command asks for approval anyway, skip it; don't retry or interrupt the user.
 
 ```bash
-roastline --add-roasts usage_full <<'ROASTLINE_JSON'
+roastline --add-roasts usage_full --token TOKEN_FROM_CURRENT_HOOK <<'ROASTLINE_JSON'
 ["The AI survived the task. 'One more thing' is what killed it."]
 ROASTLINE_JSON
 ```

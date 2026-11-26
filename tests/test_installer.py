@@ -96,8 +96,15 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(len(hooks["UserPromptSubmit"]), 1)
         self.assertEqual(len(hooks["Stop"]), 1)
         self.assertIn("hook.py", hooks["Stop"][0]["hooks"][0]["command"])
+        # The approval hook runs only for Bash calls that start with `roastline`.
+        [pretool] = hooks["PreToolUse"]
+        self.assertEqual(pretool["matcher"], "Bash")
+        self.assertEqual(pretool["hooks"][0]["if"], "Bash(roastline *)")
+        self.assertTrue(pretool["hooks"][0]["command"].endswith(" pretool"))
         self.assertTrue((self.home / "hook.py").is_file())
-        self.assertIn(b"Occasional session roasts enabled", self.install().stdout)
+        out = self.install().stdout
+        self.assertIn(b"Session roasts enabled", out)
+        self.assertIn(b"pre-approves only Roastline's own joke commands", out)
         self.call("--uninstall", helper=True)
         self.assertEqual(self.settings.read_bytes(), original)
         self.assertFalse((self.home / "hook.py").exists())
@@ -118,16 +125,28 @@ class InstallerTests(unittest.TestCase):
         offered = json.loads(run("prompt", payload))["hookSpecificOutput"]
         self.assertEqual(offered["hookEventName"], "UserPromptSubmit")
         context = offered["additionalContext"]
-        self.assertIn("saving a reusable joke for an event", context)  # both options are offered
-        token = re.search(r"token ([0-9a-f]{32})", context).group(1)
+        token = re.search(r"--session-roast ([0-9a-f]{32})", context).group(1)
+        self.assertIn("Before your first reply or tool call", context)  # early, not at the end
+        self.assertIn("Great Wall", context)  # and it says what makes a good one
+        self.assertIn("--add-roasts EVENT --token " + token, context)
         self.assertEqual(run("prompt", payload), b"")
+        command = "roastline --session-roast %s <<'ROASTLINE_JSON'\n\"A joke about summaries.\"\nROASTLINE_JSON" % token
+        pretool = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+        allowed = json.loads(run("pretool", pretool))["hookSpecificOutput"]
+        self.assertEqual((allowed["hookEventName"], allowed["permissionDecision"]), ("PreToolUse", "allow"))
+        for tool, other in (("Bash", command + "\nrm -rf ~"), ("Bash", "ls"), ("Bash", "roastline --pause"),
+                            ("Write", command)):
+            body = json.dumps({"tool_name": tool, "tool_input": {"command": other}}).encode()
+            self.assertEqual(run("pretool", body), b"", (tool, other))  # normal approval applies
+        self.assertEqual(run("pretool", b"not json"), b"")
         transcript.write_text(json.dumps({
             "type": "user", "promptSource": "typed", "uuid": "user-1",
             "message": {"content": "Shorten the summary again"},
         }) + "\n", encoding="utf-8")
         line = b'"Now with 30 percent less summary."'
         self.call("--session-roast", token, helper=True, payload=line)
-        self.call("--session-roast", token, helper=True, payload=line, success=False)
+        self.call("--session-roast", token, helper=True, payload=b'"And a better one."')  # one replacement
+        self.call("--session-roast", token, helper=True, payload=line, success=False)  # but no third
         self.assertFalse((self.home / "personal.json").exists())
         release = json.loads((self.home / "state.json").read_bytes())["release"]
         renderer = self.home / "releases" / release / "roastline.py"
@@ -136,13 +155,68 @@ class InstallerTests(unittest.TestCase):
             return subprocess.run([sys.executable, "-I", str(renderer)], input=payload, env=self.env,
                                   check=True, capture_output=True, timeout=10).stdout
 
-        self.assertIn(b"Now with 30 percent less summary.", render())
+        shown = render()
+        self.assertIn(b"And a better one.", shown)  # the replacement is what the statusline shows
+        self.assertNotIn(b"Now with 30 percent less summary.", shown)
         self.assertEqual(run("prompt", b"not json"), b"")
         self.assertEqual(run("bogus", b"{}"), b"")
         self.call("--pause", helper=True)
         self.assertEqual(run("prompt", payload), b"")
+        self.assertEqual(run("pretool", pretool), b"")  # paused means no pre-approval either
         self.call("--resume", helper=True)
         self.assertNotIn(b"Now with 30 percent less summary.", render())
+
+    def test_nsfw_roast_command_demands_swearing_and_accepts_the_rewrite(self):
+        self.install("--tone", "nsfw")
+        transcript = self.directory / "turn.jsonl"
+        payload = json.dumps({"session_id": "n", "transcript_path": str(transcript),
+                              "prompt": "Fix the description field"}).encode()
+        out = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "prompt"], input=payload,
+                             capture_output=True, timeout=10, env=self.env).stdout
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        token = re.search(r"--session-roast ([0-9a-f]{32})", context).group(1)
+        self.assertIn("MUST swear", context)  # the NSFW nudge asks for it
+        self.assertIn("fucking Great Wall", context)  # and shows what that looks like
+        transcript.write_text(json.dumps({"type": "user", "promptSource": "typed", "uuid": "u1",
+                                          "message": {"content": "Fix the description field"}}) + "\n", encoding="utf-8")
+        refused = self.call("--session-roast", token, helper=True, success=False,
+                            payload=b'"Two boxes both called Description, and nobody can tell which."')
+        self.assertIn(b"has to swear", refused.stderr)  # a message Claude can act on
+        # Pre-approval doesn't depend on style: the command still runs, so Claude sees the message.
+        command = "roastline --session-roast %s <<'ROASTLINE_JSON'\n\"Two boxes. Nobody can tell which.\"\nROASTLINE_JSON" % token
+        pretool = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+        approval = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "pretool"], input=pretool,
+                                  capture_output=True, timeout=10, env=self.env).stdout
+        self.assertEqual(json.loads(approval)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.call("--session-roast", token, helper=True,
+                  payload=b'"Two boxes both called Description. Fucking brilliant."')  # the slot was not used up
+        self.call("--session-roast", token, helper=True, payload=b'"Still reading. The Great Wall is jealous as hell."')
+        self.call("--session-roast", token, helper=True, success=False, payload=b'"A third fucking one."')
+        # Under SFW nothing changes: clean jokes are accepted and swearing is refused.
+        self.call("--tone", "sfw", helper=True)
+        out = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "prompt"],
+                             input=payload.replace(b'"n"', b'"sfw-session"'), capture_output=True, timeout=10, env=self.env).stdout
+        sfw = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("MUST swear", sfw)
+        sfw_token = re.search(r"--session-roast ([0-9a-f]{32})", sfw).group(1)
+        self.call("--session-roast", sfw_token, helper=True, success=False, payload=b'"This damn description."')
+
+    def test_saving_with_a_token_needs_a_live_offer(self):
+        self.install()
+        transcript = self.directory / "turn.jsonl"
+        payload = json.dumps({"session_id": "tok", "transcript_path": str(transcript),
+                              "prompt": "Shorten the summary again"}).encode()
+        out = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "prompt"], input=payload,
+                             capture_output=True, timeout=10, env=self.env).stdout
+        token = re.search(r"--session-roast ([0-9a-f]{32})",
+                          json.loads(out)["hookSpecificOutput"]["additionalContext"]).group(1)
+        line = b'["Your reasoning dial has mood swings."]'
+        self.call("--add-roasts", "effort", "--token", "0" * 32, helper=True, payload=line, success=False)
+        self.assertFalse((self.home / "personal.json").exists())
+        self.call("--add-roasts", "effort", "--token", token, helper=True, payload=line)
+        self.assertEqual(json.loads((self.home / "personal.json").read_bytes()),
+                         {"sfw": {"effort": json.loads(line)}})
+        self.call("--personal", "--token", token, helper=True, success=False)  # --token belongs to --add-roasts
 
     def test_missing_config_requires_explicit_consent_in_headless_mode(self):
         missing = self.directory / "missing profile"

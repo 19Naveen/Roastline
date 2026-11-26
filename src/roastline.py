@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.6.0"
+VERSION = "1.7.2"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -49,6 +49,8 @@ MAX_ROAST_WIDTH = 100
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 USAGE_THRESHOLDS = ((100, "usage_full"), (95, "usage_critical"), (80, "usage_high"), (50, "usage_half"))
 OFFER_TTL = 1800
+MATCH_WINDOW = 10  # seconds between an offer and the message row it is for
+ROAST_USES = 2  # a joke early in the turn, and one replacement if the task drags on
 MAX_TURN_SESSIONS = 50
 SGR = re.compile(r"\x1b\[[0-9;:]*m")
 LINK = re.compile(r"\x1b\]8;[^\x07\x1b\r\n]*;[^\x07\x1b\r\n]*(?:\x07|\x1b\\)")
@@ -150,6 +152,15 @@ def valid_line(text, tone, personal=False):
             and text == safe_text(text) and 1 <= display_width(text) <= MAX_ROAST_WIDTH
             and (tone != "sfw" or not PROFANITY.search(text))
             and (not personal or not PRIVATE_LOOKING.search(text)))
+
+
+# What counts as swearing in an NSFW chat roast (a little wider than what SFW forbids).
+SWEARING = re.compile(PROFANITY.pattern + r"|(?i:\b(?:hell|ass|arse|prick|wanker|dick\w*)\b|\b(?:half|dumb|bad|lazy|smart|kick)-?ass\w*)")
+
+
+def lacks_swearing(line, tone):
+    """True for a joke that is too clean for the NSFW tone."""
+    return tone == "nsfw" and isinstance(line, str) and not SWEARING.search(line)
 
 
 def load_pack(path, tone):
@@ -292,13 +303,21 @@ def waiting_trigger(row, content, now):
     return None
 
 
-# Messages the user sent: typed at the prompt, or queued while Claude was busy.
-# Tool results and other internal turns are "user" rows too, without a source.
-PROMPT_SOURCES = ("typed", "queued")
+# Messages the user sent: typed at the prompt, queued while Claude was busy, or a
+# suggestion they accepted. Tool results, task notifications and other internal turns
+# are "user" rows too, without a human origin.
+PROMPT_SOURCES = ("typed", "queued", "suggestion_accepted")
+
+
+def is_slash_command(row):
+    """A /command turn: logged without a promptSource, but marked as a human turn."""
+    origin = row.get("origin")
+    return (row.get("promptSource") is None and isinstance(origin, dict)
+            and origin.get("kind") == "human" and row.get("turnOrigin") == "human")
 
 
 def is_prompt(row):
-    return row["type"] == "user" and row.get("promptSource") in PROMPT_SOURCES
+    return row["type"] == "user" and (row.get("promptSource") in PROMPT_SOURCES or is_slash_command(row))
 
 
 def digest(text):
@@ -353,12 +372,20 @@ def turn_state(root):
     path = root / "turn-state.json"
     lock = os.open(root / ".turn-state.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(lock, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        give_up = time.monotonic() + 1.0
+        while True:  # a statusline refresh, a hook and the CLI can overlap for a moment
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= give_up:
+                    raise
+                time.sleep(0.01)
         try:
             records = read_json(path, 512_000)
         except (FileNotFoundError, ValueError, RecursionError):
@@ -398,13 +425,20 @@ def sync_prompt(record, prompt, now):
     record.pop("roast", None)
     record.pop("event_roast", None)
     record.pop("decided", None)
+    record.pop("claimed", None)
     offer = record.pop("offer", None)
     record.pop("active", None)
+    # Exactly one new human message since the offer, logged no earlier than the offer, that
+    # either has the text the hook saw or arrived with it. (A slash command's logged text
+    # is its <command-name> tags, and a message with images has placeholders: both differ
+    # from the hook's text, so the timing has to be enough.)
     if (live_offer(offer, now) and offer["after"] == previous == prompt[3]
-            and offer["text"] == prompt[1]
-            and (prompt[2] is None or prompt[2] >= offer["at"] - 3)):
+            and (prompt[2] is None or prompt[2] >= offer["at"] - 3)
+            and (offer["text"] == prompt[1]
+                 or (prompt[2] is not None and abs(prompt[2] - offer["at"]) <= MATCH_WINDOW))):
         record["active"] = offer
         record["decided"] = True
+        record["claimed"] = offer["text"]
 
 
 def offer_roast(data, config, root, now):
@@ -418,9 +452,12 @@ def offer_roast(data, config, root, now):
         prompt = current_prompt(transcript_rows(path))
         record = remember(records, key)
         sync_prompt(record, prompt, now)
-        # Some versions log the user row just before sending the hook.
-        already_logged = (prompt is not None and prompt[1] == text_key and prompt[2] is not None
-                          and 0 <= now - prompt[2] <= 3)
+        # Claude Code logs the message just before running the hook. This hook is for that row
+        # if it is recent and either has the same text or hasn't been claimed by a hook yet
+        # (the logged text of a slash command or a message with images differs from the hook's).
+        already_logged = (prompt is not None and prompt[2] is not None
+                          and 0 <= now - prompt[2] <= MATCH_WINDOW
+                          and (text_key in (prompt[1], record.get("claimed")) or not record.get("decided")))
         if already_logged and record.get("decided"):
             return None
         previous = record.get("offer")
@@ -428,10 +465,11 @@ def offer_roast(data, config, root, now):
             return None
         token = secrets.token_hex(16)
         offer = {"at": now, "after": record.get("key"), "text": text_key, "token": token,
-                 "tone": config["tone"], "path": path}
+                 "tone": config["tone"], "path": path, "left": ROAST_USES}
         if already_logged:
             record["active"] = offer
             record["decided"] = True
+            record["claimed"] = text_key  # a repeat of this hook call is a duplicate, not a new message
         else:
             record["offer"] = offer
         return token
@@ -440,7 +478,7 @@ def offer_roast(data, config, root, now):
 def eligible_offer(record, config, now):
     offer = record.get("active")
     if (live_offer(offer, now) and offer["token"] and offer["tone"] == config["tone"]
-            and not record.get("roast")):
+            and offer.get("left", 0) > 0):
         return offer
     return None
 
@@ -449,7 +487,8 @@ def submit_roast(token, line, config, root, now):
     """The capability is valid once, for the currently confirmed turn only."""
     if (not config["show_roasts"] or config.get("auto_jokes") is False
             or not re.fullmatch(r"[0-9a-f]{32}", token)
-            or not valid_line(line, config["tone"], personal=True)):
+            or not valid_line(line, config["tone"], personal=True)
+            or lacks_swearing(line, config["tone"])):
         return False
     with turn_state(root) as records:
         for record in records.values():
@@ -462,9 +501,52 @@ def submit_roast(token, line, config, root, now):
             offer = eligible_offer(record, config, now)
             if prompt is None or offer is None or offer["token"] != token:
                 return False
-            record["roast"] = [config["tone"], "", line]
-            record.pop("active", None)
+            record["roast"] = [config["tone"], "", line]  # a second submission replaces the first
+            offer["left"] -= 1
+            if offer["left"] <= 0:
+                record.pop("active", None)
             return True
+    return False
+
+
+def live_token(token, root, now):
+    """True if the token belongs to a live offer with a submission left. Read-only."""
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+        return False
+    with turn_state(root) as records:
+        return any(item and item.get("token") == token and live_offer(item, now) and item.get("left", 0) > 0
+                   for record in records.values() for item in (record.get("offer"), record.get("active")))
+
+
+# The only commands the permission hook will pre-approve: exactly the shapes the hook
+# message documents, with a quoted here-doc (so the shell expands nothing) and a body
+# that is a single line of JSON, and a token Roastline minted for the current turn.
+SUBMIT_COMMAND = re.compile(
+    r"roastline --session-roast ([0-9a-f]{32}) <<'ROASTLINE_JSON'\n([^\n]*)\nROASTLINE_JSON\n?")
+SAVE_COMMAND = re.compile(
+    r"roastline --add-roasts ([a-z_]+) --token ([0-9a-f]{32}) <<'ROASTLINE_JSON'\n([^\n]*)\nROASTLINE_JSON\n?")
+
+
+def approve_command(command, config, root, now):
+    """True only for an exact roast command that carries a live token and a valid joke."""
+    if (not isinstance(command, str) or len(command) > 4096 or not config["show_roasts"]
+            or config.get("auto_jokes") is False):
+        return False
+    tone = config["tone"]
+    try:
+        found = SUBMIT_COMMAND.fullmatch(command)
+        if found:
+            token, body = found.groups()
+            return valid_line(json.loads(body), tone, personal=True) and live_token(token, root, now)
+        found = SAVE_COMMAND.fullmatch(command)
+        if found:
+            event, token, body = found.groups()
+            lines = json.loads(body)
+            return (event in TRIGGERS and isinstance(lines, list) and 1 <= len(lines) <= 5
+                    and all(valid_line(line, tone, personal=True) for line in lines)
+                    and live_token(token, root, now))
+    except (ValueError, RecursionError):
+        pass
     return False
 
 
