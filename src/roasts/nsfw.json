@@ -37,48 +37,8 @@
     "Your absence is now the most consistent thing in this goddamn repo.",
     "You didn't take a break. You went on a whole-ass side quest."
   ],
-  "tools": [
-    "Someone tell the tool calls they aren't paid by the fucking mile.",
-    "Turns out 'just one file' was some award-winning bullshit."
-  ],
-  "caps": [
-    "Caps lock is not a fucking requirements document.",
-    "I can hear you from three goddamn tabs away."
-  ],
-  "short": [
-    "You supplied less context than a fucking fortune cookie.",
-    "A detailed spec, if you're programming a goddamn doorbell."
-  ],
-  "retry": [
-    "Copy, paste, and pray: a developer's unholy fucking trinity.",
-    "You're treating the prompt box like a broken-ass elevator button."
-  ],
-  "burst": [
-    "The Send key is working a double and getting paid jack shit.",
-    "That's a lot of typing to still call it a 'quick fucking question.'"
-  ],
-  "flood": [
-    "You're not iterating. You're hosting a fucking auction.",
-    "Claude would love to answer one before you send the next fucking ten."
-  ],
-  "late_night": [
-    "Go the fuck to sleep. The bug is nocturnal too.",
-    "Tomorrow's git blame is going to be an absolute shitshow."
-  ],
-  "session_regular": [
-    "We crossed 'quick chat' back at the third damn subplot.",
-    "You could have written the whole damn changelog in fewer messages."
-  ],
-  "session_marathon": [
-    "This conversation has chapters, appendices, and a fucking director's cut.",
-    "What the hell is keeping this chat alive? Spite?"
-  ],
   "effort": [
     "Adjusting the brain settings won't fix a half-assed spec.",
     "So much effort spent deciding how much effort to spend. Beautiful bullshit."
-  ],
-  "default": [
-    "Let's see what the hell counts as 'small' today.",
-    "Nothing's on fire yet. Don't take that as a formal challenge."
   ]
 }

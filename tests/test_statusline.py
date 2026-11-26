@@ -35,8 +35,11 @@ class StatuslineTests(unittest.TestCase):
         self.transcript = self.root / "session.jsonl"
 
     def candidates(self, *rows):
+        """Write a transcript; return the waiting/idle event its last row would trigger."""
         self.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-        return dict(r.conversation_triggers(str(self.transcript), NOW))
+        parsed = r.transcript_rows(str(self.transcript))
+        waiting = r.waiting_trigger(*parsed[-1], NOW) if parsed else None
+        return dict([waiting]) if waiting else {}
 
     def test_each_pack_has_multiple_distinct_roasts_per_trigger(self):
         all_jokes = set()
@@ -51,10 +54,15 @@ class StatuslineTests(unittest.TestCase):
 
     def test_pack_loader_rejects_an_empty_trigger(self):
         pack = r.load_pack(PACKS / "sfw.json", "sfw")
-        pack["short"] = []
         path = self.root / "pack.json"
+        pack["effort"] = []
         path.write_text(json.dumps(pack), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "at least one line per trigger"):
+            r.load_pack(path, "sfw")
+        pack = r.load_pack(PACKS / "sfw.json", "sfw")
+        pack["short"] = ["A line for a trigger that no longer exists."]
+        path.write_text(json.dumps(pack), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "does not cover all triggers"):
             r.load_pack(path, "sfw")
 
     def test_assistant_question_formats_and_thresholds(self):
@@ -76,100 +84,97 @@ class StatuslineTests(unittest.TestCase):
                                          message("user", "The first route")), {})
         self.assertEqual(self.candidates(message("assistant", "Done.", ago=899)), {})
 
-    def test_prompt_signals_do_not_reuse_prompt_text(self):
-        self.assertEqual(self.candidates(message("user", "TOKENLEAK42!"))["caps"], "Caps lock")
-        self.assertEqual(self.candidates(message("user", "a1b2c3"))["short"], "Tiny prompt")
-        self.assertIn("retry", self.candidates(message("user", " Rebuild  it ", 40),
-                                               message("user", "rebuild it")))
-        self.assertEqual(self.candidates(message("user", "TINYTEXT99", isMeta=True)), {})
-        self.assertEqual(self.candidates(message("user", "TINYTEXT99", isSidechain=True)), {})
-        self.assertEqual(self.candidates(message("user", "TINYTEXT99", promptSource="tool")), {})
+    def test_only_typed_or_queued_user_rows_count_as_prompts(self):
+        def current(*rows):
+            self.candidates(*rows)
+            return r.current_prompt(r.transcript_rows(str(self.transcript)))
 
-    def test_prompt_frequency_and_session_thresholds(self):
-        def prompts(number, age):
-            return [message("user", "Coding request {}".format(index), ago=age)
-                    for index in range(number)]
-        self.assertNotIn("burst", self.candidates(*prompts(5, 0)))
-        self.assertIn("burst", self.candidates(*prompts(6, 30)))
-        self.assertIn("flood", self.candidates(*prompts(10, 599)))
-        self.assertNotIn("burst", self.candidates(*prompts(6, 600)))
-        self.assertIn("session_regular", self.candidates(*prompts(20, 900)))
-        self.assertIn("session_marathon", self.candidates(*prompts(40, 900)))
-
-    def test_tool_count_stops_at_last_prompt_and_deduplicates(self):
-        calls = [{"type": "tool_use", "name": "Bash", "id": str(index)} for index in range(15)]
-        older = [message("user", "Previous task", ago=5), message("assistant", calls, ago=3)]
-        current = message("user", "Current task")
-        self.assertNotIn("tools", self.candidates(*older, current, message("assistant", calls[:14] * 2)))
-        self.assertIn("tools", self.candidates(*older, current, message("assistant", calls)))
+        self.assertIsNotNone(current(message("user", "hi", uuid="a")))
+        self.assertIsNotNone(current(message("user", "hi", uuid="a", promptSource="queued")))
+        for extra in ({"isMeta": True}, {"isSidechain": True}, {"promptSource": "tool"}, {"promptSource": None}):
+            self.assertIsNone(current(message("user", "hi", uuid="a", **extra)), extra)
+        # Tool results and replies never advance the current prompt.
+        rows = [message("user", "hi", uuid="a"), message("assistant", "ok"),
+                {**message("user", [{"type": "tool_result"}]), "promptSource": None}]
+        self.assertEqual(current(*rows), current(rows[0]))
 
     def test_malformed_transcript_fails_closed_and_torn_tail_is_safe(self):
-        original = message("user", "SHORT")
-        self.candidates(original)
+        self.candidates(message("user", "SHORT", uuid="a"))
+        path = str(self.transcript)
         with self.transcript.open("ab") as stream:
             stream.write(b'{"type":')
-        self.assertIn("short", dict(r.conversation_triggers(str(self.transcript), NOW)))
+        self.assertEqual(len(r.transcript_rows(path)), 1)  # a torn final write is skipped
         with self.transcript.open("ab") as stream:
             stream.write(b"\n")
-        self.assertEqual(r.conversation_triggers(str(self.transcript), NOW), [])
-        self.assertEqual(r.conversation_triggers(str(self.root / "missing"), NOW), [])
+        self.assertEqual(r.transcript_rows(path), [])  # damage in the middle fails closed
+        self.assertEqual(r.transcript_rows(str(self.root / "missing")), [])
         self.assertEqual(self.candidates({"type": "user", "message": {"content": [7]}}), {})
 
     def test_large_transcript_only_reads_its_tail(self):
         with self.transcript.open("wb") as stream:
             stream.seek(50_000_000)
-            stream.write(b"\n" + json.dumps(message("user", "again")).encode() + b"\n")
+            stream.write(b"\n" + json.dumps(message("user", "again", uuid="a")).encode() + b"\n")
         with patch.object(r, "TAIL_BYTES", 512):
-            self.assertEqual(dict(r.conversation_triggers(str(self.transcript), NOW)), {"short": "Tiny prompt"})
+            self.assertEqual(len(r.transcript_rows(str(self.transcript))), 1)
 
-    def test_usage_thresholds_and_trigger_priority(self):
+    def test_usage_thresholds_fire_once_when_crossed(self):
+        def events(percent, record):
+            return r.event_triggers({"rate_limits": {"five_hour": {"used_percentage": percent}}},
+                                    [], record, NOW)
+
         for percent, expected in ((49.99, None), (50, "usage_half"), (80, "usage_high"),
                                   (95, "usage_critical"), (100, "usage_full")):
-            value = r.usage_trigger({"rate_limits": {"five_hour": {"used_percentage": percent}}})
-            self.assertEqual(value[0] if value else None, expected)
-        data = {"context_window": {"used_percentage": 100}, "effort": {"level": "high"}}
-        self.assertEqual(r.choose_trigger(data, CONFIG, NOW), ("usage_full", "Context 100%"))
-        self.candidates(message("assistant", "Will you answer?", ago=301))
-        data["transcript_path"] = str(self.transcript)
-        self.assertEqual(r.choose_trigger(data, CONFIG, NOW)[0], "question_late")
-        self.assertEqual(r.choose_trigger({"effort": {"level": "max"}}, CONFIG, NOW)[0], "effort")
-        self.assertEqual(r.choose_trigger({}, CONFIG, NOW)[0], "default")
-        self.assertEqual(r.choose_trigger({}, CONFIG, NOW - 10 * 3600)[0], "late_night")
+            found = events(percent, {"usage_levels": {"5h": 0}})
+            self.assertEqual(found[0][0] if found else None, expected, percent)
+        record = {}
+        self.assertEqual(events(80, record), [])  # joining a session already at 80% is not a crossing
+        self.assertEqual(events(80, record), [])  # and a steady value never fires
+        self.assertEqual(events(96, record)[0][0], "usage_critical")
+        self.assertEqual(events(97, record), [])
+        self.assertEqual(r.event_triggers({"rate_limits": {"five_hour": {"used_percentage": 100}}}, [], {}, NOW)[0][0],
+                         "usage_full")  # a session that opens full still gets its joke
 
-    def test_rotation_includes_only_detected_trigger_and_active_tone(self):
-        personal = {"sfw": {"effort": ["Custom clean line.", "Another clean line."]},
-                    "nsfw": {"effort": ["Custom spicy line, damn it.", "Another spicy line, damn it."]}}
-        (self.root / "personal.json").write_text(json.dumps(personal), encoding="utf-8")
-        data = {"session_id": "session", "effort": {"level": "max"},
-                "transcript_path": str(self.transcript)}
+    def test_hitting_the_limit_outranks_other_simultaneous_events(self):
+        data = {"session_id": "s", "effort": {"level": "high"},
+                "context_window": {"used_percentage": 99}}
+        self.assertIsNone(r.visible_roast(data, CONFIG, self.root, PACKS, NOW))
+        data["effort"]["level"] = "max"
+        data["context_window"]["used_percentage"] = 100
+        reason, joke = r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
+        self.assertEqual(reason, "Context 100%")
+        self.assertIn(joke, r.load_pack(PACKS / "sfw.json", "sfw")["usage_full"])
+
+    def test_event_jokes_mix_stock_and_saved_lines_per_tone(self):
+        saved = {"sfw": {"effort": ["Saved clean line.", "Another clean line."]},
+                 "nsfw": {"effort": ["Saved spicy line, damn it."]}}
+        (self.root / "personal.json").write_text(json.dumps(saved), encoding="utf-8")
         for tone in r.TONES:
-            config = {**CONFIG, "tone": tone}
-            chosen, rows = [], []
-            for i in range(12):
-                # The user sends a message: a new joke may be picked.
-                # Older than 10 minutes, so the prompt-burst trigger stays out of the way.
-                rows.append(message("user", "please do part " + str(i), 601, promptId="prompt-" + str(i)))
-                self.candidates(*rows)
-                choice = r.choose_roast(data, config, self.root, PACKS, NOW)
-                self.assertEqual(choice, r.choose_roast(data, config, self.root, PACKS, NOW + 300))
-                # Claude's own turns (replies, tool calls, tool results) keep the same joke.
-                for n in range(3):
-                    rows.append(message("assistant", [{"type": "tool_use", "id": "t%d-%d" % (i, n), "name": "Bash"}]))
-                    rows.append({**message("user", [{"type": "tool_result", "tool_use_id": "t%d-%d" % (i, n)}]),
-                                 "promptSource": None})
-                    rows.append(message("assistant", "Step %d done" % n))
-                    self.candidates(*rows)
-                    self.assertEqual(r.choose_roast(data, config, self.root, PACKS, NOW), choice, (i, n))
-                chosen.append(choice)
-            self.assertTrue(all(reason == "Effort max" for reason, _ in chosen))
-            self.assertGreaterEqual(len(set(chosen)), 4)  # new messages do rotate the joke
-            self.assertTrue(any(line in personal[tone]["effort"] for _, line in chosen))
-            other = "nsfw" if tone == "sfw" else "sfw"
-            self.assertFalse(any(line in personal[other]["effort"] for _, line in chosen))
-        # A message queued while Claude was busy counts as a new message too.
-        rows.append(message("user", "and also this", promptId="queued-1", promptSource="queued"))
-        self.candidates(*rows)
-        self.assertEqual(r.last_prompt_key(r.bounded_rows(self.transcript)), "queued-1")
+            stock = set(r.load_pack(PACKS / (tone + ".json"), tone)["effort"])
+            mine = set(saved[tone]["effort"])
+            indices = {}
+            shown = [r.event_joke(self.root, PACKS, tone, "effort", indices) for _ in range(12)]
+            self.assertTrue(set(shown) & stock and set(shown) & mine, tone)  # a real mixture
+            self.assertLessEqual(set(shown), stock | mine)  # nothing from the other tone
+            self.assertEqual(sum(line in mine for line in shown), 6)  # saved lines play every other time
+        # With nothing saved, only the stock lines rotate, starting anywhere.
+        stock = r.load_pack(PACKS / "sfw.json", "sfw")["effort"]
+        indices = {}
+        shown = [r.event_joke(self.root / "nothing", PACKS, "sfw", "effort", indices) for _ in range(4)]
+        self.assertEqual(set(shown), set(stock))
+        self.assertNotEqual(shown[0], shown[1])
+
+    def test_saved_jokes_for_a_retired_trigger_never_play(self):
+        saved = {"sfw": {"short": ["Old tiny prompt line."], "effort": ["Saved clean line."]}}
+        (self.root / "personal.json").write_text(json.dumps(saved), encoding="utf-8")
+        data = {"session_id": "s", "effort": {"level": "high"}}
+        shown = set()
+        r.visible_roast(data, CONFIG, self.root, PACKS, NOW)
+        for level in ("max", "low", "high", "max", "low", "high"):
+            data["effort"]["level"] = level
+            shown.add(r.visible_roast(data, CONFIG, self.root, PACKS, NOW)[1])
+        self.assertIn("Saved clean line.", shown)
+        self.assertNotIn("Old tiny prompt line.", shown)
+        self.assertNotIn("short", r.TRIGGERS)
 
     def test_roast_joins_a_statusline_with_nerd_font_icons(self):
         original = "\x1b[1m\u25c6 repo\x1b[0m \u2502 \uf073 11% (25/11 15:16)".encode()

@@ -37,48 +37,8 @@
     "Your TODOs have stopped expecting you and started a book club.",
     "Welcome back. Your unsaved thoughts are now a cold case."
   ],
-  "tools": [
-    "That 'tiny change' just summoned the entire tool belt.",
-    "Claude is checking every file like the bug owes it money."
-  ],
-  "caps": [
-    "Your caps lock is doing the work your acceptance criteria should.",
-    "ALL CAPS: because the compiler responds to volume, apparently."
-  ],
-  "short": [
-    "That prompt has fewer details than a commit named 'fix'.",
-    "You brought two words to a requirements meeting. Efficient."
-  ],
-  "retry": [
-    "You sent it again. The requirements remain under witness protection.",
-    "That prompt has been deployed twice and debugged zero times."
-  ],
-  "burst": [
-    "Your send button is doing continuous deployment.",
-    "By the time Claude reads this, you'll have changed the scope twice."
-  ],
-  "flood": [
-    "Your send button has requested a rate limit.",
-    "You're not chatting; you're stress-testing the inbox."
-  ],
-  "late_night": [
-    "Your sleep schedule has more merge conflicts than this branch.",
-    "Dark mode is working overtime. You don't have to."
-  ],
-  "session_regular": [
-    "Your 'quick question' now has a changelog.",
-    "We've been here long enough for the workaround to become tradition."
-  ],
-  "session_marathon": [
-    "This session has outlived at least three definitions of 'done'.",
-    "The original bug is probably retired by now."
-  ],
   "effort": [
     "Maximum effort for a button rename: the button feels important.",
     "That dial is doing more planning than the ticket."
-  ],
-  "default": [
-    "The code works. That should narrow it down to everything else.",
-    "Another day, another TODO pretending to be a five-minute fix."
   ]
 }

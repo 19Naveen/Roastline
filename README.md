@@ -137,14 +137,24 @@ tone, and your saved jokes.
 conversation. The prompt hook makes the `/roastline` skill available for that
 turn. There is no lottery, cooldown, or stock fallback. A submitted joke is
 shown in the statusline until the next user message. One-off jokes don't
-change the personal bank; you can still inspect it with `roastline --personal`.
+change your saved jokes.
 
 **Events:** An observed reasoning-level change, usage crossing 50%, 80%, 95%,
-or 100%, or a new waiting or idle threshold uses a stock joke. Variations rotate
-when the same event happens again. An event joke takes precedence over a chat
-joke on that turn, and reaching 100% takes priority over any simultaneous
-event. Events are checked when Claude refreshes the statusline; an event-driven
-statusline won't wake up just because an idle threshold passed.
+or 100%, or a new waiting or idle threshold shows a joke for that event. The packs
+hold the stock variations, and your saved jokes for the event are mixed in, so a
+saved one plays about every other time. Variations rotate when the same event
+happens again. An event joke takes precedence over a chat joke on that turn, and
+reaching 100% takes priority over any simultaneous event. Events are checked
+when Claude refreshes the statusline; an event-driven statusline won't wake up
+just because an idle threshold passed.
+
+**Saved event jokes:** When one of your habits keeps recurring and Claude has a
+genuinely good line for an event, it can quietly save it with
+`roastline --add-roasts EVENT`, in the active tone. Nothing is saved for a one-off
+or a duplicate, and each event keeps its 20 most recent jokes per tone. Inspect
+them with `roastline --personal`; `roastline --triggers` lists the events. Jokes
+saved under the older behaviour triggers (such as `short` or `caps`) no longer
+play, but they stay in the file untouched.
 
 `roastline --pause` silences roasts and their hooks. Uninstall removes
 Roastline's hooks and leaves your own hooks intact.
@@ -152,9 +162,10 @@ Roastline's hooks and leaves your own hooks intact.
 There's one joke on screen at a time. If Claude skips a chat roast and no new
 event occurs, the statusline shows only its normal information.
 
-The renderer reads a bounded tail of the local Claude transcript to infer
-interaction patterns. It never quotes raw prompts or makes network calls.
-Personal jokes are stored in a local file, split by tone. Using the
+The renderer reads a bounded tail of the local Claude transcript to tell whether
+Claude is waiting on you and which message is current. It never quotes raw prompts
+or makes network calls.
+Saved jokes are stored in a local file, split by tone. Using the
 skill is a normal Claude Code interaction; the statusline itself never calls
 a model. NSFW allows profanity and stronger jabs, not slurs.
 

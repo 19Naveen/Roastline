@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offer an occasional session roast and close the offer at the end of a turn."""
+"""Let Claude decide on a chat roast or a saved event joke each turn, and close the offer after."""
 import importlib.util
 import json
 import re
@@ -10,12 +10,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 NUDGE = (
-    "Roastline is available for this user turn. Do the user's actual work first. "
-    "If something genuinely funny happened in this conversation (e.g. asking for a "
-    "TL;DR of an already short TL;DR), follow the roastline skill's 'One-off session "
-    "roasts' workflow using the token {token}. Tone: {tone}. If the skill isn't "
-    "available, there is no good line, or you were asked not to personalize, do nothing. "
-    "Do not put the joke in your reply or update the personal joke bank."
+    "Roastline is available for this user turn. Do the user's actual work first. Then, only "
+    "if something genuinely funny happened, use the roastline skill for ONE of: (1) a one-off "
+    "statusline roast about this conversation, using the token {token}; or (2) saving a "
+    "reusable joke for an event (reasoning change, usage limits, waiting, idle) when one of "
+    "the user's habits keeps recurring. Tone: {tone}. If nothing lands, the skill isn't "
+    "available, or you were asked not to personalize, do nothing. Never mention Roastline "
+    "or put a joke in your reply."
 )
 
 

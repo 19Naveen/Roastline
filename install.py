@@ -22,7 +22,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -815,26 +815,29 @@ def manage(home, args):
             for trigger, lines in replacement.items():
                 if (trigger not in runtime.TRIGGERS or not isinstance(lines, list)
                         or len(lines) > runtime.MAX_PERSONAL):
-                    raise InstallError("Invalid trigger or too many personal roasts.")
+                    raise InstallError("Invalid event trigger or too many saved jokes. "
+                                       "Use --triggers to list the events.")
                 for line in lines:
                     if not runtime.valid_line(line, tone, personal=True) or line.casefold() in seen:
                         raise InstallError("Invalid or duplicate personal roast; nothing was changed.")
                     seen.add(line.casefold())
             bank = object_json(raw_file(home.personal, 512_000), home.personal)
-            bank[tone] = replacement
+            old = bank.get(tone) if isinstance(bank.get(tone), dict) else {}
+            # Jokes saved for triggers from older versions no longer play, but are never deleted.
+            bank[tone] = {**{k: v for k, v in old.items() if k not in runtime.TRIGGERS}, **replacement}
             write_atomic(home.personal, json_bytes(bank))
-            message("OK", "Updated personal {} roasts".format(tone.upper()))
+            message("OK", "Updated saved {} event jokes".format(tone.upper()))
             return
         if args.add_roasts:
             trigger = args.add_roasts
             if trigger not in runtime.TRIGGERS:
-                raise InstallError("Unknown trigger. Use --triggers to list available triggers.")
+                raise InstallError("Unknown event. Use --triggers to list the events.")
             data = sys.stdin.buffer.read(4097)
             lines = json.loads(data) if len(data) <= 4096 else None
             tone = options["tone"]
-            if (not isinstance(lines, list) or not 2 <= len(lines) <= 5
+            if (not isinstance(lines, list) or not 1 <= len(lines) <= 5
                     or not all(runtime.valid_line(line, tone, personal=True) for line in lines)):
-                raise InstallError("Supply 2–5 short, single-line jokes as a JSON array, in the active tone, without links or identifiers.")
+                raise InstallError("Supply 1–5 short, single-line jokes as a JSON array, in the active tone, without links or identifiers.")
             stock = runtime.load_pack(home.releases / state["release"] / "roasts" / (tone + ".json"), tone)
             bank = object_json(raw_file(home.personal, 512_000), home.personal)
             group = bank.setdefault(tone, {})
@@ -975,11 +978,11 @@ def main(argv=None):
     action.add_argument("--uninstall", action="store_true", help="restore the original statusline")
     action.add_argument("--pause", action="store_true", help="hide roasts without removing the statusline")
     action.add_argument("--resume", action="store_true", help="show roasts again")
-    action.add_argument("--add-roasts", metavar="TRIGGER", help="read 2–5 approved jokes as JSON from stdin")
-    action.add_argument("--personal", action="store_true", help="show the local personal roast bank as JSON")
-    action.add_argument("--replace-personal", action="store_true", help="replace active tone's personal bank from JSON stdin")
-    action.add_argument("--session-roast", metavar="TOKEN", help="submit one JSON string for an offered roast slot")
-    action.add_argument("--triggers", action="store_true", help="list the available roast triggers")
+    action.add_argument("--add-roasts", metavar="EVENT", help="save 1–5 jokes for an event, as a JSON array on stdin")
+    action.add_argument("--personal", action="store_true", help="show the saved event jokes as JSON")
+    action.add_argument("--replace-personal", action="store_true", help="replace the active tone's saved event jokes from JSON stdin")
+    action.add_argument("--session-roast", metavar="TOKEN", help="submit one JSON string for an offered chat roast")
+    action.add_argument("--triggers", action="store_true", help="list the events that have jokes")
     parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
                         help="open the tone picker or select sfw/nsfw directly")
     parser.add_argument("--non-interactive", action="store_true", help="do not prompt")

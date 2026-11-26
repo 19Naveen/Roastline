@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -28,7 +28,7 @@ DEFAULTS = {
     "color": True,
     "timezone_offset": None,
 }
-TRIGGERS = {
+EVENT_PRIORITIES = {
     "question_wait": 8,
     "question_late": 9,
     "question_ghosted": 9,
@@ -38,18 +38,10 @@ TRIGGERS = {
     "usage_full": 8,
     "idle": 6,
     "idle_long": 7,
-    "tools": 5,
-    "caps": 5,
-    "short": 4,
-    "retry": 5,
-    "burst": 3,
-    "flood": 4,
-    "late_night": 3,
-    "session_regular": 1,
-    "session_marathon": 2,
     "effort": 0,
-    "default": -1,
 }
+# Stock and saved jokes exist only for events. Chat roasts are written by Claude.
+TRIGGERS = tuple(EVENT_PRIORITIES)
 HERE = Path(__file__).resolve().parent
 TAIL_BYTES = 600_000
 MAX_PERSONAL = 20  # per trigger and tone
@@ -228,17 +220,6 @@ def usage_fields(data):
     ) for number in (numeric(value),) if number is not None and number >= 0)
 
 
-def usage_trigger(data):
-    candidates = usage_fields(data)
-    if not candidates:
-        return None
-    name, percent, _ = max(candidates, key=lambda item: item[1])
-    for threshold, key in USAGE_THRESHOLDS:
-        if percent >= threshold:
-            return key, "{} {}%".format(name, min(100, int(percent)))
-    return None
-
-
 def bounded_rows(path):
     """Read a fixed tail, skip a torn final write, never scan a whole large transcript."""
     path = Path(path)
@@ -318,115 +299,6 @@ PROMPT_SOURCES = ("typed", "queued")
 
 def is_prompt(row):
     return row["type"] == "user" and row.get("promptSource") in PROMPT_SOURCES
-
-
-def last_prompt_key(rows):
-    """A stable id for the user's latest message, or None if it isn't in view."""
-    for row, _ in reversed(rows):
-        if is_prompt(row):
-            for field in ("promptId", "uuid", "timestamp"):
-                if isinstance(row.get(field), str) and row[field]:
-                    return row[field]
-            return None
-    return None
-
-
-def conversation_triggers(path, now):
-    if not isinstance(path, str) or not path:
-        return []
-    try:
-        rows = bounded_rows(path)
-    except (OSError, ValueError, RecursionError):
-        return []
-    if not rows:
-        return []
-    candidates = []
-    prompts = [(i, row, c) for i, (row, c) in enumerate(rows) if is_prompt(row)]
-    waiting = waiting_trigger(*rows[-1], now)
-    if waiting:
-        candidates.append(waiting)
-    if not prompts:
-        return candidates
-    index, _, last = prompts[-1]
-    calls, ids = 0, set()
-    for event, value in rows[index + 1:]:
-        if event["type"] == "assistant":
-            for block in blocks_of(value):
-                if block["type"] == "tool_use" and block.get("name") != "AskUserQuestion":
-                    tool_id = block.get("id")
-                    if not isinstance(tool_id, str) or not tool_id or tool_id not in ids:
-                        calls += 1
-                        if isinstance(tool_id, str) and tool_id:
-                            ids.add(tool_id)
-    if calls >= 15:
-        candidates.append(("tools", "{} tool calls this turn".format(calls)))
-    prompt = text_of(last).strip()
-    alpha = sum(char.isalpha() for char in prompt)
-    if alpha >= 8 and sum(char.isupper() for char in prompt) / alpha > 0.8:
-        candidates.append(("caps", "Caps lock"))
-    if 0 < len(prompt) <= 6:
-        candidates.append(("short", "Tiny prompt"))
-    normalized = " ".join(prompt.casefold().split())
-    if normalized and len(prompts) >= 2:
-        previous = " ".join(text_of(prompts[-2][2]).casefold().split())
-        if previous == normalized:
-            candidates.append(("retry", "Same prompt twice"))
-    recent = 0
-    for _, event, _ in prompts:
-        sent = timestamp(event.get("timestamp"))
-        if sent is not None and 0 <= now - sent < 600:
-            recent += 1
-    if recent >= 6:
-        candidates.append(("flood" if recent >= 10 else "burst", "{} prompts in 10m".format(recent)))
-    # On large transcripts these are lower bounds, not misleading exact totals.
-    if len(prompts) >= 20:
-        marathon = len(prompts) >= 40
-        candidates.append(("session_marathon" if marathon else "session_regular",
-                           "{}+ prompts this session".format(40 if marathon else 20)))
-    return candidates
-
-
-def choose_trigger(data, config, now):
-    candidates = conversation_triggers(data.get("transcript_path"), now)
-    usage = usage_trigger(data)
-    if usage:
-        candidates.append(usage)
-    if datetime.fromtimestamp(now, timezone_for(config["timezone_offset"])).hour < 5:
-        candidates.append(("late_night", "Late-night session"))
-    effort = get(data, "effort", "level")
-    if effort in EFFORT_LEVELS:
-        candidates.append(("effort", "Effort " + effort))
-    candidates.append(("default", "Claude Code"))
-    return max(candidates, key=lambda candidate: TRIGGERS[candidate[0]])
-
-
-def choose_roast(data, config, root, pack_dir, now):
-    trigger, reason = choose_trigger(data, config, now)
-    tone = config["tone"]
-    pack = load_pack(pack_dir / (tone + ".json"), tone)
-    stock = pack[trigger]
-    personal = list(dict.fromkeys(personal_lines(root / "personal.json", tone, trigger)))
-    session = get(data, "session_id")
-    seed = (session[:256] if isinstance(session, str) else "") + ":" + trigger + ":" + tone
-    offset = int.from_bytes(hashlib.sha256(seed.encode("utf-8", "replace")).digest()[:8], "big")
-    # The user's latest message drives rotation: the joke changes when they send
-    # one, and stays put through Claude's own turns (tool calls, results,
-    # replies) and through refreshes.
-    try:
-        rows = bounded_rows(data.get("transcript_path")) if data.get("transcript_path") else []
-    except (OSError, ValueError, RecursionError, TypeError):
-        rows = []
-    prompt_key = last_prompt_key(rows) or data.get("prompt_id") or ""
-    index = int.from_bytes(hashlib.sha256(str(prompt_key).encode("utf-8", "replace")).digest()[:8], "big")
-    turn = index + offset
-    if len(personal) == 1:
-        # With one personal joke, alternate rather than show the same joke twice.
-        joke = personal[0] if turn % 2 else stock[(turn // 2) % len(stock)]
-    elif personal and turn % 4 != 0:
-        joke = personal[(turn - turn // 4 - 1) % len(personal)]
-    else:
-        joke = stock[(turn // 4) % len(stock)]
-    return reason, joke
 
 
 def digest(text):
@@ -638,6 +510,26 @@ def event_triggers(data, rows, record, now):
     return candidates
 
 
+def event_joke(root, pack_dir, tone, trigger, indices):
+    """Alternate stock and personal lines without changing the built-in pack."""
+    stock = load_pack(pack_dir / (tone + ".json"), tone)[trigger]
+    seen = {line.casefold() for line in stock}
+    personal = []
+    for line in personal_lines(root / "personal.json", tone, trigger):
+        if line.casefold() not in seen:
+            personal.append(line)
+            seen.add(line.casefold())
+    slot = tone + ":" + trigger
+    if slot not in indices:  # a fresh session starts anywhere in the rotation
+        indices[slot] = secrets.randbelow(2 * len(stock))
+    index = indices[slot]
+    indices[slot] = index + 1
+    if personal:
+        pool = personal if index % 2 else stock
+        return pool[(index // 2) % len(pool)]
+    return stock[index % len(stock)]
+
+
 def visible_roast(data, config, root, pack_dir, now):
     key = session_key(data)
     if not key:
@@ -650,14 +542,10 @@ def visible_roast(data, config, root, pack_dir, now):
         events = event_triggers(data, rows, record, now)
         if events:
             # A quota reaching 100% takes priority over simultaneous events.
-            trigger, reason = max(events, key=lambda item: (item[0] == "usage_full", TRIGGERS[item[0]]))
+            trigger, reason = max(events, key=lambda item: (item[0] == "usage_full", EVENT_PRIORITIES[item[0]]))
             tone = config["tone"]
-            stock = load_pack(pack_dir / (tone + ".json"), tone)[trigger]
             indices = record.setdefault("event_indices", {})
-            slot = tone + ":" + trigger
-            index = indices[slot] + 1 if slot in indices else secrets.randbelow(len(stock))
-            indices[slot] = index % len(stock)
-            record["event_roast"] = [tone, reason, stock[indices[slot]]]
+            record["event_roast"] = [tone, reason, event_joke(root, pack_dir, tone, trigger, indices)]
         roast = record.get("event_roast") or record.get("roast")
         if roast and roast[0] == config["tone"] and (prompt is not None or not record.get("key")):
             return tuple(roast[1:])

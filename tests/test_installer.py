@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -116,7 +117,9 @@ class InstallerTests(unittest.TestCase):
                               "prompt": "Shorten the summary again"}).encode()
         offered = json.loads(run("prompt", payload))["hookSpecificOutput"]
         self.assertEqual(offered["hookEventName"], "UserPromptSubmit")
-        token = offered["additionalContext"].split("using the token ")[1].split(".")[0]
+        context = offered["additionalContext"]
+        self.assertIn("saving a reusable joke for an event", context)  # both options are offered
+        token = re.search(r"token ([0-9a-f]{32})", context).group(1)
         self.assertEqual(run("prompt", payload), b"")
         transcript.write_text(json.dumps({
             "type": "user", "promptSource": "typed", "uuid": "user-1",
@@ -332,20 +335,30 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(list(self.config.iterdir()), [])
 
-    def test_personal_bank_requires_approved_json_and_is_separate_per_tone(self):
+    def test_saved_event_jokes_need_approved_json_and_are_separate_per_tone(self):
         self.install()
-        clean = b'["The spec is having a rerun.", "Your prompt came with a replay button."]'
-        self.call("--add-roasts", "retry", helper=True, payload=clean)
-        self.call("--add-roasts", "retry", helper=True, payload=clean)
-        self.call("--add-roasts", "retry", helper=True, success=False,
+        clean = b'["Your reasoning dial has mood swings.", "That dial change needed a changelog."]'
+        self.call("--add-roasts", "effort", helper=True, payload=clean)
+        self.call("--add-roasts", "effort", helper=True, payload=clean)  # duplicates are ignored
+        self.call("--add-roasts", "effort", helper=True, success=False,
                   payload=b'["No.", "Email user@example.com."]')
-        self.call("--add-roasts", "retry", helper=True, success=False,
-                  payload=b'["No.", "This damn prompt."]')
+        self.call("--add-roasts", "effort", helper=True, success=False,
+                  payload=b'["No.", "This damn dial."]')
+        self.call("--add-roasts", "effort", helper=True, success=False, payload=b"[]")
+        self.call("--add-roasts", "effort", helper=True, success=False,
+                  payload=b'["a","b","c","d","e","f"]')
+        # Only events can be saved; the old behaviour triggers are gone.
+        self.call("--add-roasts", "retry", helper=True, success=False, payload=clean)
+        self.call("--add-roasts", "nonsense", helper=True, success=False, payload=clean)
         self.call("--tone", "nsfw", helper=True)
-        strong = b'["This damn prompt.", "That stupid button did not work twice."]'
-        self.call("--add-roasts", "retry", helper=True, payload=strong)
+        strong = b'["This damn dial.", "That stupid slider did not help."]'
+        self.call("--add-roasts", "effort", helper=True, payload=strong)
+        self.call("--add-roasts", "usage_full", helper=True, payload=b'["One good line is enough."]')
         bank = json.loads((self.home / "personal.json").read_bytes())
-        self.assertEqual(bank, {"sfw": {"retry": json.loads(clean)}, "nsfw": {"retry": json.loads(strong)}})
+        self.assertEqual(bank, {"sfw": {"effort": json.loads(clean)},
+                                "nsfw": {"effort": json.loads(strong), "usage_full": ["One good line is enough."]}})
+        self.assertNotIn(b"retry", self.call("--triggers", helper=True).stdout)
+        self.assertIn(b"usage_full", self.call("--triggers", helper=True).stdout)
         self.call("--pause", helper=True)
         self.assertIn(b"paused", self.call("--status", helper=True).stdout)
         self.call("--resume", "--tone", "sfw", helper=True)
@@ -354,21 +367,36 @@ class InstallerTests(unittest.TestCase):
     def test_replace_personal_cli(self):
         self.install()
         self.call("--pet", "cat", helper=True, success=False)  # pets were removed
-        payload = b'{"retry":["The prompt has a sequel.", "The send button wants royalties."]}'
+        payload = b'{"effort":["The dial has mood swings.", "The slider wants royalties."]}'
         self.call("--replace-personal", helper=True, payload=payload)
         bank = json.loads(self.call("--personal", helper=True).stdout)
         self.assertEqual(bank["roasts"]["sfw"], json.loads(payload))
-        self.call("--replace-personal", helper=True, payload=b'{"retry":["repeat","repeat"]}', success=False)
+        self.call("--replace-personal", helper=True, payload=b'{"effort":["repeat","repeat"]}', success=False)
+        self.call("--replace-personal", helper=True, success=False, payload=b'{"retry":["Old trigger line."]}')
         self.assertEqual(json.loads(self.call("--personal", helper=True).stdout), bank)
         self.assertNotIn(b"Examples:", self.call("--help", helper=True).stdout)
+
+    def test_replace_personal_keeps_jokes_saved_for_retired_triggers(self):
+        self.install()
+        old = {"sfw": {"short": ["Old tiny prompt line."]}, "nsfw": {"caps": ["Old caps line, damn it."]}}
+        (self.home / "personal.json").write_text(json.dumps(old), encoding="utf-8")
+        self.call("--replace-personal", helper=True, payload=b'{"effort":["The dial has mood swings."]}')
+        bank = json.loads((self.home / "personal.json").read_bytes())
+        self.assertEqual(bank["sfw"], {"short": ["Old tiny prompt line."], "effort": ["The dial has mood swings."]})
+        self.assertEqual(bank["nsfw"], old["nsfw"])  # the other tone is untouched
+        # Replacing again with nothing new still keeps them, and add-roasts leaves them alone.
+        self.call("--replace-personal", helper=True, payload=b"{}")
+        self.call("--add-roasts", "idle", helper=True, payload=b'["Nobody is home."]')
+        self.assertEqual(json.loads((self.home / "personal.json").read_bytes())["sfw"],
+                         {"short": ["Old tiny prompt line."], "idle": ["Nobody is home."]})
 
     def test_update_uses_resolved_commit_and_preserves_user_state(self):
         original = b'{"statusLine":{"type":"command","command":"echo keep"}}'
         self.settings.write_bytes(original)
         self.install("--tone", "nsfw")
         self.call("--pause", helper=True)
-        self.call("--add-roasts", "retry", helper=True,
-                  payload=b'["The spec is having a rerun.", "Your prompt came with a replay button."]')
+        self.call("--add-roasts", "effort", helper=True,
+                  payload=b'["The dial is having a rerun.", "Your slider came with a replay button."]')
         bank = (self.home / "personal.json").read_bytes()
         state_path = self.home / "state.json"
         previous = json.loads(state_path.read_bytes())
