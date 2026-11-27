@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
@@ -45,6 +45,7 @@ EVENT_PRIORITIES = {
 TRIGGERS = tuple(EVENT_PRIORITIES)
 HERE = Path(__file__).resolve().parent
 TAIL_BYTES = 600_000
+CHECKPOINT_BYTES = 64 * 1024 * 1024
 MAX_PERSONAL = 20  # per trigger and tone
 MAX_ROAST_WIDTH = 100
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -241,17 +242,53 @@ def usage_fields(data):
     ) for number in (numeric(value),) if number is not None and number >= 0)
 
 
-def bounded_rows(path):
+def prefix_digest(stream, length):
+    result = hashlib.sha256()
+    stream.seek(0)
+    while length:
+        block = stream.read(min(length, 65536))
+        if not block:
+            raise ValueError("transcript prefix was truncated")
+        result.update(block)
+        length -= len(block)
+    return result.hexdigest()
+
+
+def unchanged_file(a, b):
+    return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns) == (
+        b.st_dev, b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns)
+
+
+def bounded_rows(path, checkpoint=None):
     """Read a fixed tail, skip a torn final write, never scan a whole large transcript."""
     path = Path(path)
     if not stat.S_ISREG(path.stat().st_mode):
         raise ValueError("not a regular transcript")
     with path.open("rb") as stream:
-        size = os.fstat(stream.fileno()).st_size
-        offset = max(0, size - TAIL_BYTES)
-        stream.seek(max(0, offset - 1))
-        blob = stream.read(TAIL_BYTES + bool(offset))
-    if offset:
+        info = os.fstat(stream.fileno())
+        size = info.st_size
+        if checkpoint is not None:
+            device, inode, offset, expected_digest = checkpoint
+            if (not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (device, inode)
+                    or offset < 0 or offset > CHECKPOINT_BYTES or offset > size or size - offset > TAIL_BYTES):
+                raise ValueError("transcript changed since offer")
+            if prefix_digest(stream, offset) != expected_digest:
+                raise ValueError("transcript prefix was rewritten")
+            if offset:
+                stream.seek(offset - 1)
+                if stream.read(1) != b"\n":
+                    raise ValueError("offer started inside a transcript row")
+            stream.seek(offset)
+            blob = stream.read(TAIL_BYTES + 1)
+            if len(blob) > TAIL_BYTES or not unchanged_file(info, os.fstat(stream.fileno())):
+                raise ValueError("transcript changed while reading")
+            if blob and not blob.endswith(b"\n"):
+                raise ValueError("transcript has an incomplete row")
+        else:
+            offset = max(0, size - TAIL_BYTES)
+            stream.seek(max(0, offset - 1))
+            blob = stream.read(TAIL_BYTES + bool(offset))
+    if offset and checkpoint is None:
         blob = blob.partition(b"\n")[2]
     lines = blob.split(b"\n")
     rows = []
@@ -427,6 +464,48 @@ def live_offer(offer, now):
     return offer is not None and 0 <= now - offer["at"] <= OFFER_TTL
 
 
+def transcript_checkpoint(path):
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+        with open(path, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > CHECKPOINT_BYTES:
+                return None
+            offset = max(0, info.st_size - TAIL_BYTES)
+            stream.seek(offset)
+            tail = stream.read(TAIL_BYTES)
+            newline = tail.rfind(b"\n")
+            if newline < 0 and offset:
+                return None
+            end = offset + newline + 1 if newline >= 0 else 0
+            checksum = prefix_digest(stream, end)
+            if not unchanged_file(info, os.fstat(stream.fileno())):
+                return None
+            return [info.st_dev, info.st_ino, end, checksum]
+    except (OSError, ValueError):
+        return None
+
+
+def appended_prompt_matches(checkpoint, path, prompt):
+    try:
+        rows = bounded_rows(path, checkpoint)
+        prompts = [(row, content) for row, content in rows if is_prompt(row)]
+        if not prompts:
+            return None
+        current = current_prompt(prompts)
+        return len(prompts) == 1 and current is not None and current[0] == prompt[0]
+    except (OSError, ValueError, RecursionError, TypeError):
+        return False
+
+
+def single_new_prompt(offer, prompt):
+    checkpoint = offer.get("checkpoint")
+    if checkpoint is None or prompt[2] is None or abs(prompt[2] - offer["at"]) > MATCH_WINDOW:
+        return False
+    return appended_prompt_matches(checkpoint, offer["path"], prompt) is True
+
+
 def sync_prompt(record, prompt, now):
     if prompt is None or prompt[0] == record.get("key"):
         return
@@ -442,7 +521,8 @@ def sync_prompt(record, prompt, now):
     # either has the text the hook saw or arrived with it. (A slash command's logged text
     # is its <command-name> tags, and a message with images has placeholders: both differ
     # from the hook's text, so the timing has to be enough.)
-    if (live_offer(offer, now) and offer["after"] == previous == prompt[3]
+    if (live_offer(offer, now) and offer["after"] == previous
+            and (previous == prompt[3] or (prompt[3] is None and single_new_prompt(offer, prompt)))
             and (prompt[2] is None or prompt[2] >= offer["at"] - 3)
             and (offer["text"] == prompt[1]
                  or (prompt[2] is not None and abs(prompt[2] - offer["at"]) <= MATCH_WINDOW))):
@@ -459,8 +539,17 @@ def offer_roast(data, config, root, now):
         return None
     text_key = prompt_digest(text)
     with turn_state(root) as records:
-        prompt = current_prompt(transcript_rows(path))
         record = remember(records, key)
+        checkpoint = transcript_checkpoint(path) if record.get("key") is not None else None
+        prompt = current_prompt(transcript_rows(path))
+        if (prompt is not None and record.get("key") is not None and prompt[0] != record["key"]
+                and prompt[3] is not None and prompt[3] != record["key"]):
+            sync_prompt(record, prompt, now)
+            return None
+        if (checkpoint is not None and prompt is not None and prompt[0] != record.get("key")
+                and appended_prompt_matches(checkpoint, path, prompt) is False):
+            sync_prompt(record, prompt, now)
+            return None
         sync_prompt(record, prompt, now)
         # Claude Code logs the message just before running the hook. This hook is for that row
         # if it is recent and either has the same text or hasn't been claimed by a hook yet
@@ -476,6 +565,8 @@ def offer_roast(data, config, root, now):
         token = secrets.token_hex(16)
         offer = {"at": now, "after": record.get("key"), "text": text_key, "token": token,
                  "tone": config["tone"], "path": path, "left": ROAST_USES}
+        if prompt is None and record.get("key") is not None:
+            offer["checkpoint"] = checkpoint
         if already_logged:
             record["active"] = offer
             record["decided"] = True

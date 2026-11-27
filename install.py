@@ -22,7 +22,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")

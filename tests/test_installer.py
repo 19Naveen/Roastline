@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -115,6 +116,38 @@ class InstallerTests(unittest.TestCase):
         self.call("--character", "default", helper=True)
         self.assertIsNone(json.loads(options.read_bytes())["character"])
         self.assertIn("Use your own sassy companion voice", context("default"))
+
+    def test_installed_hook_accepts_image_turn_when_previous_prompt_left_tail(self):
+        self.install("--tone", "nsfw", "--character", "Rick Sanchez")
+        transcript = self.directory / "turn.jsonl"
+        payload = {"session_id": "image-test", "transcript_path": str(transcript)}
+        now = datetime.now(timezone.utc)
+        old = {"type": "user", "promptSource": "typed", "uuid": "old",
+               "timestamp": now.isoformat(), "message": {"content": "Previous task"}}
+        transcript.write_text(json.dumps(old) + "\n", encoding="utf-8")
+        state = json.loads((self.home / "state.json").read_bytes())
+        renderer = self.home / "releases" / state["release"] / "roastline.py"
+
+        def render():
+            return subprocess.run([sys.executable, "-I", str(renderer)], input=json.dumps(payload).encode(),
+                                  capture_output=True, env=self.env, timeout=10, check=True).stdout
+
+        render()
+        with transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "system", "data": "x" * 610_000}) + "\n")
+        hook = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "prompt"],
+                              input=json.dumps({**payload, "prompt": "Improve this [Image #1]"}).encode(),
+                              capture_output=True, env=self.env, timeout=10, check=True)
+        context = json.loads(hook.stdout)["hookSpecificOutput"]["additionalContext"]
+        token = re.search(r"--session-roast ([0-9a-f]{32})", context).group(1)
+        image = {"type": "user", "promptSource": "typed", "uuid": "new",
+                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                 "message": {"content": [{"type": "text", "text": "Improve this"}, {"type": "image"}]}}
+        with transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(image) + "\n")
+        line = "It's close, so now we polish the shit out of it. Story of my damn life, Morty."
+        self.call("--session-roast", token, helper=True, payload=json.dumps(line).encode())
+        self.assertIn(line.encode(), render())
 
     def test_hooks_for_occasional_roasts_leave_other_hooks_alone(self):
         theirs = {"matcher": "startup", "hooks": [{"type": "command", "command": "bash herdr.sh session"}]}

@@ -170,6 +170,116 @@ class StatuslineTests(unittest.TestCase):
                 self.assertEqual(r.submit_roast(token, "A joke about the screenshot.", CONFIG, self.root, NOW + gap),
                                  accepted)
 
+    def test_image_turn_after_previous_prompt_falls_out_of_transcript_tail(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        old = message("user", "Previous task", 60, uuid="old")
+        self.candidates(old)
+        config = {**CONFIG, "tone": "nsfw"}
+        r.visible_roast(data, config, self.root, PACKS, NOW - 60)
+        with self.transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "system", "data": "x" * 5000}) + "\n")
+        image = message("user", [{"type": "text", "text": "Improve this"},
+                                 {"type": "image"}], uuid="new")
+        with patch.object(r, "TAIL_BYTES", 4096):
+            self.assertIsNone(r.current_prompt(r.transcript_rows(str(self.transcript))))
+            token = r.offer_roast({**data, "prompt": "Improve this [Image #1]"}, config, self.root, NOW - 0.1)
+            with self.transcript.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(image) + "\n")
+            line = "It's close, so now we polish the shit out of it. Story of my damn life, Morty."
+            self.assertTrue(r.submit_roast(token, line, config, self.root, NOW + 1))
+            self.assertEqual(r.visible_roast(data, config, self.root, PACKS, NOW + 2), ("", line))
+
+    def test_missing_previous_prompt_never_accepts_an_unverifiable_turn(self):
+        for scenario in ("two prompts", "replaced transcript", "rewritten prefix",
+                         "oversized append", "incomplete append"):
+            with self.subTest(scenario=scenario):
+                root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                transcript = root / "turn.jsonl"
+                data = {"session_id": "s", "transcript_path": str(transcript)}
+                old = message("user", "Previous task", 60, uuid="old")
+                transcript.write_text(json.dumps(old) + "\n", encoding="utf-8")
+                r.visible_roast(data, CONFIG, root, PACKS, NOW - 60)
+                with transcript.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"type": "system", "data": "x" * 5000}) + "\n")
+                with patch.object(r, "TAIL_BYTES", 4096):
+                    token = r.offer_roast({**data, "prompt": "Improve this"}, CONFIG, root, NOW)
+                    if scenario == "replaced transcript":
+                        transcript.rename(root / "original.jsonl")
+                    if scenario == "rewritten prefix":
+                        original_size = transcript.stat().st_size
+                        hidden = (json.dumps(message("user", "Other", uuid="other")) + "\n").encode()
+                        transcript.write_bytes(hidden + b" " * (original_size - len(hidden) - 1) + b"\n")
+                    with transcript.open("a", encoding="utf-8") as stream:
+                        if scenario == "two prompts":
+                            stream.write(json.dumps(message("user", "Other", uuid="other")) + "\n")
+                        if scenario == "oversized append":
+                            stream.write(json.dumps({"type": "system", "data": "x" * 5000}) + "\n")
+                        stream.write(json.dumps(message("user", "Improve this", uuid="new")) + "\n")
+                        if scenario == "incomplete append":
+                            stream.write('{"type":')
+                    self.assertFalse(r.submit_roast(token, "A joke about the task.", CONFIG, root, NOW + 1))
+
+    def test_prompt_arriving_during_checkpoint_is_claimed(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        self.candidates(message("user", "Previous task", 60, uuid="old"))
+        r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 60)
+        with self.transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "system", "data": "x" * 5000}) + "\n")
+        capture = r.transcript_checkpoint
+
+        def checkpoint_after_prompt(path):
+            with self.transcript.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(message("user", "Improve this", uuid="new")) + "\n")
+            return capture(path)
+
+        with patch.object(r, "TAIL_BYTES", 4096), patch.object(r, "transcript_checkpoint", checkpoint_after_prompt):
+            token = r.offer_roast({**data, "prompt": "Improve this"}, CONFIG, self.root, NOW)
+            self.assertTrue(r.submit_roast(token, "A joke about the task.", CONFIG, self.root, NOW + 1))
+
+    def test_two_prompts_arriving_during_checkpoint_are_not_misattributed(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        self.candidates(message("user", "Previous task", 60, uuid="old"))
+        r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 60)
+        with self.transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "system", "data": "x" * 5000}) + "\n")
+        capture = r.transcript_checkpoint
+
+        def checkpoint_after_prompts(path):
+            with self.transcript.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(message("user", "Improve this", uuid="one")) + "\n")
+                stream.write(json.dumps(message("user", "Different task", uuid="two")) + "\n")
+            return capture(path)
+
+        with patch.object(r, "TAIL_BYTES", 4096), patch.object(r, "transcript_checkpoint", checkpoint_after_prompts):
+            self.assertIsNone(r.offer_roast({**data, "prompt": "Improve this"}, CONFIG, self.root, NOW))
+
+    def test_partial_prompt_at_checkpoint_can_be_completed(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        self.candidates(message("user", "Previous task", 60, uuid="old"))
+        r.visible_roast(data, CONFIG, self.root, PACKS, NOW - 60)
+        row = (json.dumps(message("user", "Improve this", uuid="new")) + "\n").encode()
+        with self.transcript.open("ab") as stream:
+            stream.write(json.dumps({"type": "system", "data": "x" * 5000}).encode() + b"\n")
+            stream.write(row[:len(row) // 2])
+        with patch.object(r, "TAIL_BYTES", 4096):
+            token = r.offer_roast({**data, "prompt": "Improve this"}, CONFIG, self.root, NOW)
+            with self.transcript.open("ab") as stream:
+                stream.write(row[len(row) // 2:])
+            self.assertTrue(r.submit_roast(token, "A joke about the task.", CONFIG, self.root, NOW + 1))
+
+    def test_rejected_hook_invalidates_previous_turn_token(self):
+        data = {"session_id": "s", "transcript_path": str(self.transcript)}
+        first = message("user", "First task", uuid="one")
+        self.candidates(first)
+        token = r.offer_roast({**data, "prompt": "First task"}, CONFIG, self.root, NOW)
+        self.assertTrue(r.live_token(token, self.root, NOW))
+        self.candidates(first, message("user", "Second task", -1, uuid="two"),
+                        message("user", "Third task", -2, uuid="three"))
+        self.assertIsNone(r.offer_roast({**data, "prompt": "Third task"}, CONFIG, self.root, NOW + 2))
+        command = "roastline --add-roasts idle --token %s <<'ROASTLINE_JSON'\n[\"A line.\"]\nROASTLINE_JSON" % token
+        self.assertFalse(r.live_token(token, self.root, NOW + 2))
+        self.assertFalse(r.approve_command(command, CONFIG, self.root, NOW + 2))
+
     def test_hook_running_after_the_row_claims_it_even_when_the_text_differs(self):
         # A message with an image: the logged text differs from the hook's, and the hook is a bit late.
         data = {"session_id": "s", "transcript_path": str(self.transcript)}
