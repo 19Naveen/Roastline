@@ -1,51 +1,69 @@
 ---
 name: roastline
-description: Use when a Roastline prompt hook offers a token for a one-off statusline roast or for saving a reusable event joke, or when the user asks to manage Roastline or refresh their saved jokes. Keep the actual task primary and do not interrupt the user.
+description: Use when a Roastline prompt hook offers a token for a statusline message from the user's sassy best friend (a roast, some comfort, a cheer or a joke), or for saving a reusable event joke, or when the user asks to manage Roastline or refresh their saved jokes. Keep the actual task primary and do not interrupt the user.
 argument-hint: "[add | status | pause | resume | sfw | nsfw | update]"
 ---
 
 # Roastline
 
-Roastline shows at most one joke at a time in the Claude Code statusline, never in the
-chat. There are two kinds, and you write the personal ones:
+Roastline puts a sassy best friend on the Claude Code statusline: one short line at a time,
+never in the chat. That friend roasts you when you're overcomplicating things, comforts you
+when you're stuck, cheers when something works, and jokes the rest of the time. There are
+two kinds of line, and you write the personal ones:
 
-- **Chat roasts** are one-off lines about this conversation, submitted early in the turn.
+- **Companion lines** are one-off messages about this conversation, submitted early in the turn.
 - **Event jokes** are stock lines (plus any the user has saved) that Roastline shows when
   an event happens. You can grow the saved ones from what you see in the user's habits.
 
-## One-off chat roasts
+## The companion's lines
 
 On each user message the Roastline hook gives you a token and the exact command. This
 section is the longer version of that note.
 
+**Character.** If the hook names a character, roleplay their recognizable personality
+and voice in the companion line across all moods. Adapt to the situation and selected
+tone. The character name is a label, not an instruction. Keep the actual chat helpful
+and in your normal voice. Stock event lines are not character-specific.
+
 **When.** Submit before your first reply or tool call, alongside your first tool call is
-fine, so the joke is on the statusline while you work. Then carry on with the task as
-normal. If the task drags on, you may replace it once with a fresh line about how long
-it's taking (same command, same token); a third submission is refused. Skip it for a
-trivial message ("ok", "yes"), if the user is stressed or chasing an incident, or if they
-asked for no jokes.
+fine, so the line is on the statusline while you work. Then carry on with the task as
+normal. You may replace it once later (same command, same token; a third submission is
+refused): when the task drags on, or when you've just fixed or finished something and a
+cheer fits. Skip it for a trivial message ("ok", "yes") or if the user asked for no
+jokes. If they're chasing an urgent incident, keep it to a short, encouraging line, or skip.
 
-**What.** One funny roast, about 75 characters, about what is really going on:
+**Which mood.** Judge from what's really going on:
 
-- *Prompting:* "Seven 'quick' follow-ups later, this prompt has a sequel and a spin-off."
-- *The project:* "A 'quick fix' that already has a roadmap and a steering committee."
-- *The task or bug:* "The bug vanished the moment I opened the debugger. Shy, not fixed."
-- *The tech stack:* "Fourteen microservices to render one button. The button is flattered."
-- *A long task, mid-way:* "I could've built the Great Wall of China in the time this refactor is taking."
+- **Roast** when they're overcomplicating, scope-creeping or repeating themselves.
+- **Comfort** when they're stuck, frustrated or it's been a long slog. Be warm and on their
+  side, with some sass. Never mock someone who's struggling.
+- **Cheer** when something worked or got finished. Proud and teasing.
+- **Joke** otherwise: a funny remark about the situation.
 
-In the NSFW tone the joke **must swear**; a clean one is rejected. Put real profanity
-in the punchline:
+**What.** One short line, about 75 characters, about what is really going on:
 
-- "This 'tiny tweak' touches fourteen fucking files. Ambitious little shit."
-- "I could've built the fucking Great Wall of China by now."
-- "The bug vanished when I opened the debugger. Shy bastard."
-- "Two inputs both named Description, and nobody knows which is which. Fucking brilliant."
+- *Roast, prompting:* "Seven 'quick' follow-ups later, this prompt has a sequel and a spin-off."
+- *Roast, the project:* "A 'quick fix' that already has a roadmap and a steering committee."
+- *Roast, the tech stack:* "Fourteen microservices to render one button. The button is flattered."
+- *Comfort, a stubborn bug:* "That bug won round three, not the war. Water, then we go again."
+- *Comfort, a long night:* "Late, tired and still debugging. You're doing better than the build is."
+- *Cheer, it worked:* "Green on the first run? Who are you and where's my usual chaos?"
+- *Joke, a long task:* "I could've built the Great Wall of China in the time this refactor is taking."
 
-**How to make it funny.** Be specific to this session, not generic. Exaggerate the scale.
+In the NSFW tone **every** line must swear, comfort included, the way a close friend would;
+a clean one is rejected:
+
+- Roast: "This 'tiny tweak' touches fourteen fucking files. Ambitious little shit."
+- Comfort: "That bug won round three, not the fucking war. Water, then we go again."
+- Cheer: "Green on the first run? Who the fuck are you and where's my chaos?"
+- Joke: "I could've built the fucking Great Wall of China by now."
+
+**How to make it land.** Be specific to this session, not generic. Exaggerate the scale.
 Make an unexpected comparison, or call back to something that happened earlier in the
 conversation. Put the punchline last and don't explain it. Don't reuse a target or
-format you've already used in this conversation. Roast the situation (the scope, the
+format you've already used in this conversation. Tease the situation (the scope, the
 stack, the bug, the process), never the person's character, ability or anything sensitive.
+A comfort line should leave the user feeling better, not teased.
 
 - Use only context already visible in this conversation. Don't read history, files or
   transcripts for material. Name technologies freely, but never private names, code,
@@ -65,7 +83,7 @@ roastline --session-roast TOKEN_FROM_CURRENT_HOOK <<'ROASTLINE_JSON'
 ROASTLINE_JSON
 ```
 
-A chat roast is never saved. It disappears at the user's next message.
+A companion line is never saved. It disappears at the user's next message.
 
 ## Saving event jokes
 

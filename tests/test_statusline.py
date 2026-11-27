@@ -439,27 +439,46 @@ class StatuslineTests(unittest.TestCase):
         for word in ("class", "assignment", "pass", "hello", "shell", "assess"):
             self.assertTrue(r.lacks_swearing("The " + word + " module.", "nsfw"), word)  # no false positives
 
-    def test_the_nudge_matches_the_tone_and_its_examples_pass_the_validator(self):
+    def test_the_nudge_is_a_companion_in_four_moods_and_matches_the_tone(self):
         spec = importlib.util.spec_from_file_location("roastline_hook", ROOT / "src/hook.py")
         hook = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(hook)
         for tone in r.TONES:
             nudge = hook.NUDGE.format(token="a" * 32, tone=tone, tone_rule=hook.TONE_RULES[tone],
                                       examples=hook.EXAMPLES[tone], save_tone=hook.SAVE_TONE[tone],
-                                      on_failure=hook.ON_FAILURE[tone])
-            examples = re.findall(r'"(.+?)"(?: /|$)', hook.EXAMPLES[tone])
-            self.assertGreaterEqual(len(examples), 2)
-            for line in examples:
+                                      on_failure=hook.ON_FAILURE[tone],
+                                      character_rule=hook.character_rule(None))
+            examples = dict(re.findall(r'(ROAST|COMFORT|CHEER|JOKE) "(.+?)"(?: /|$)', hook.EXAMPLES[tone]))
+            self.assertEqual(set(examples), {"ROAST", "COMFORT", "CHEER", "JOKE"}, tone)  # one of each mood
+            for mood, line in examples.items():
                 self.assertTrue(r.valid_line(line, tone, personal=True), line)
-                self.assertEqual(r.lacks_swearing(line, tone), False, line)
-                self.assertEqual(bool(r.PROFANITY.search(line)), tone == "nsfw", line)
+                self.assertFalse(r.lacks_swearing(line, tone), line)
+                # NSFW swears in every mood, comfort included; SFW never does.
+                self.assertEqual(bool(r.PROFANITY.search(line)), tone == "nsfw", (tone, mood, line))
+            for mood in ("ROAST", "COMFORT", "CHEER", "JOKE"):
+                self.assertIn("- %s " % mood, nudge)  # each mood is explained, not only exampled
+            self.assertIn("sassy best friend", nudge)
+            self.assertIn("Never mock someone who's struggling", nudge)
+            self.assertNotIn("stressed", nudge)  # comfort, not skipping, is how a struggling user is met
+            self.assertIn("a cheer", nudge)  # a later replacement can be a cheer when work lands
             if tone == "nsfw":
-                self.assertIn("MUST swear", nudge)
+                self.assertIn("every message MUST swear, even a comforting one", nudge)
                 self.assertIn("rewrite it with real profanity", nudge)
             else:
                 self.assertNotIn("swear", nudge.lower())
                 self.assertFalse(r.PROFANITY.search(nudge))
             self.assertIn("--session-roast " + "a" * 32, nudge)
+
+    def test_stock_event_packs_include_warm_companion_lines_in_both_tones(self):
+        warm = {"idle": "Still there?", "idle_long": "Welcome back", "question_ghosted": "No pressure",
+                "usage_critical": "wrap", "usage_full": "Rest up"}
+        for tone in r.TONES:
+            pack = r.load_pack(PACKS / (tone + ".json"), tone)
+            for trigger, fragment in warm.items():
+                hit = [line for line in pack[trigger] if fragment.lower() in line.lower() or
+                       (trigger == "usage_full" and "rest" in line.lower()) or
+                       (trigger == "idle" and "no rush" in line.lower())]
+                self.assertTrue(hit, (tone, trigger))
 
     def test_approval_follows_the_active_tone(self):
         nsfw = {**CONFIG, "tone": "nsfw"}

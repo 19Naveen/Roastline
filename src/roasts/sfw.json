@@ -9,7 +9,8 @@
   ],
   "question_ghosted": [
     "At this point the question needs a maintainer, not an answer.",
-    "Claude asked for a decision, not a time capsule."
+    "Claude asked for a decision, not a time capsule.",
+    "Still waiting on that answer. No pressure. Okay, a little pressure."
   ],
   "usage_half": [
     "Half the budget is gone and the 'quick fix' has a backstory.",
@@ -21,21 +22,25 @@
   ],
   "usage_critical": [
     "The context window has room for one last semicolon.",
-    "Time to summarize before this session becomes an oral tradition."
+    "Time to summarize before this session becomes an oral tradition.",
+    "Nearly out of tokens. Let's wrap this up before we both run dry."
   ],
   "usage_full": [
     "Even the AI left you on read.",
     "The AI has gone out for tokens. It said not to wait up.",
     "Your 'quick question' just put the AI on unpaid leave.",
-    "The AI set its out-of-office reply to 'one more thing.'"
+    "The AI set its out-of-office reply to 'one more thing.'",
+    "Out of tokens, not out of ideas. Rest up. I'll keep your seat warm."
   ],
   "idle": [
     "Your code is right where you left it. So is the bug.",
-    "The terminal is quiet enough to hear your tests not running."
+    "The terminal is quiet enough to hear your tests not running.",
+    "Still there? No rush. I'm not going anywhere."
   ],
   "idle_long": [
     "Your TODOs have stopped expecting you and started a book club.",
-    "Welcome back. Your unsaved thoughts are now a cold case."
+    "Welcome back. Your unsaved thoughts are now a cold case.",
+    "Welcome back! I kept your seat warm and judged nobody. Much."
   ],
   "effort": [
     "Maximum effort for a button rename: the button feels important.",

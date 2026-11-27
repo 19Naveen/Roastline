@@ -9,7 +9,8 @@
   ],
   "question_ghosted": [
     "How the hell do you ghost a program that lives on your computer?",
-    "The question has retired. Congratulations on missing the whole damn career."
+    "The question has retired. Congratulations on missing the whole damn career.",
+    "Still waiting on that answer. No pressure. Okay, a little fucking pressure."
   ],
   "usage_half": [
     "That's a lot of tokens for a 'tiny fucking tweak.'",
@@ -21,21 +22,25 @@
   ],
   "usage_critical": [
     "The remaining tokens fit in a goddamn thimble.",
-    "The meter's so close to empty it's running on your bullshit."
+    "The meter's so close to empty it's running on your bullshit.",
+    "Nearly out of tokens. Let's wrap this shit up before we both run dry."
   ],
   "usage_full": [
     "The AI left you on read and took the damn charger.",
     "The AI would love to help, but it just ran out of fucks. And tokens.",
     "The AI saw 'one more thing' and logged the fuck off.",
-    "The AI ghosted you. For once, the damn bar explained why."
+    "The AI ghosted you. For once, the damn bar explained why.",
+    "Out of tokens, not out of ideas. Go rest. I'll hold your damn seat."
   ],
   "idle": [
     "The repo has ten stale branches and you found time to join them.",
-    "This is a coffee break, not a fucking research sabbatical."
+    "This is a coffee break, not a fucking research sabbatical.",
+    "Still there? No rush. I'm not going the fuck anywhere."
   ],
   "idle_long": [
     "Your absence is now the most consistent thing in this goddamn repo.",
-    "You didn't take a break. You went on a whole-ass side quest."
+    "You didn't take a break. You went on a whole-ass side quest.",
+    "Welcome back, you beautiful bastard. Your seat's still warm."
   ],
   "effort": [
     "Adjusting the brain settings won't fix a half-assed spec.",

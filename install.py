@@ -22,7 +22,7 @@ from datetime import datetime
 from urllib import request
 
 
-VERSION = "1.7.2"
+VERSION = "1.8.0"
 REPO = "19Naveen/Roastline"
 HERE = Path(__file__).resolve().parent
 TONES = ("sfw", "nsfw")
@@ -632,7 +632,12 @@ def install(home, args):
         else:
             tone = args.tone or config["tone"]
         config["tone"] = tone
+        if args.character is not None:
+            config["character"] = None if args.character.lower() == "default" else args.character
+            if not runtime.valid_character(config["character"]):
+                raise InstallError("Character must be a short name with letters, numbers, spaces or .'-")
         message("OK", "Tone: {}".format(tone.upper()))
+        message("OK", "Character: {}".format(config["character"] or "sassy companion"))
         private_dir(home.root)
         private_dir(home.releases)
         private_dir(home.backups)
@@ -788,6 +793,7 @@ def status(home):
     message("INFO", "Roastline {} • {} • {}".format(
         state.get("version", "?"), "configured" if enabled else "not the current user statusline",
         "paused" if options.get("show_roasts") is False else str(options.get("tone", "sfw")).upper()))
+    message("INFO", "Character: {}".format(options.get("character") or "sassy companion"))
     message("INFO", "Original settings backup: {}".format(home.backups / state["backup"]))
 
 
@@ -873,6 +879,11 @@ def manage(home, args):
             options["tone"] = prompt_tone(args.non_interactive, default=options["tone"])
         elif args.tone:
             options["tone"] = args.tone
+        if args.character is not None:
+            character = None if args.character.lower() == "default" else args.character
+            if not runtime.valid_character(character):
+                raise InstallError("Character must be a short name with letters, numbers, spaces or .'-")
+            options["character"] = character
         if args.pause or args.resume:
             options["show_roasts"] = args.resume
         if options != before:
@@ -880,7 +891,9 @@ def manage(home, args):
                 runtime.clear_live_roasts(home.root)
             write_atomic(home.options, json_bytes(options))
         message("OK", "Roasts {} ({})".format("enabled" if options["show_roasts"] else "paused",
-                                             options["tone"].upper()))
+                                              options["tone"].upper()))
+        if args.character is not None:
+            message("OK", "Character: {}".format(options["character"] or "sassy companion"))
 
 
 def fetch(url, limit):
@@ -997,6 +1010,8 @@ def main(argv=None):
     parser.add_argument("--token", metavar="TOKEN", help="with --add-roasts: tie the save to a live roast offer")
     parser.add_argument("--tone", nargs="?", const=True, type=tone_arg, metavar="{sfw,nsfw}",
                         help="open the tone picker or select sfw/nsfw directly")
+    parser.add_argument("--character", metavar="NAME",
+                        help="roleplay as a character in companion lines; use default to reset")
     parser.add_argument("--non-interactive", action="store_true", help="do not prompt")
     if bundle:
         parser.add_argument("--create-config", action="store_true",
@@ -1024,6 +1039,10 @@ def main(argv=None):
     if args.tone and (args.status or args.triggers or args.uninstall or args.update
                       or args.add_roasts or args.personal or args.replace_personal or args.session_roast):
         parser.error("--tone is for install, tone switching, pause or resume")
+    if args.character is not None and (args.status or args.triggers or args.uninstall or args.update
+                                       or args.add_roasts or args.personal or args.replace_personal
+                                       or args.session_roast):
+        parser.error("--character is for install, character switching, pause or resume")
     if args.token and not args.add_roasts:
         parser.error("--token is only for --add-roasts")
     # An installed helper/launcher belongs to its own profile. Do not let a
@@ -1045,7 +1064,7 @@ def main(argv=None):
             if path is None:
                 raise InstallError("Roastline is not installed.")
             print("\n".join(load_runtime(path).TRIGGERS))
-        elif manage_action or not bundle and args.tone:
+        elif manage_action or not bundle and (args.tone or args.character is not None):
             manage(home, args)
         elif bundle:
             if os.environ.get("ROASTLINE_BOOTSTRAPPED") != "1":

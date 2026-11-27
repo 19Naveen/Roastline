@@ -1,5 +1,6 @@
 {
   "tone": "sfw",
+  "character": null,
   "show_roasts": true,
   "rotation_seconds": 30,
   "full_message": "FULL",

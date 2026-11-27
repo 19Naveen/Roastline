@@ -73,6 +73,9 @@ roastline --help          # list the available options
 roastline --status        # show the installed version, tone, and backup
 roastline --tone          # pick a tone interactively
 roastline --tone sfw      # or nsfw; no prompt
+roastline --character "Tony Stark"  # roleplay in companion lines
+roastline --character Groot        # choose another character
+roastline --character default      # return to the sassy companion
 roastline --pause
 roastline --resume
 roastline --update        # install a newer version from GitHub
@@ -133,23 +136,33 @@ tone, and your saved jokes.
 
 ## When roasts appear
 
-**Chat:** On each message you send (including one that is just a slash command, such as
-`/pstack:bro`), the prompt hook hands Claude a one-time token
-and the exact command to run. Claude submits a one-line roast early in the turn,
-alongside its first tool call, so it's on your statusline while it works, then
-carries on with the task. If the task drags on it can replace the joke once (for
-example, *"I could've built the Great Wall of China in the time this refactor is
-taking"*); a third submission is refused. The jokes are about what's really going
-on: your prompting, the project, the task or bug, the tech stack. Claude skips
-trivial messages ("ok", "yes") and anything where you're stressed or asked for no
-jokes. In the NSFW tone the joke has to swear: a clean joke is refused with a message,
-doesn't use up the slot, and Claude is told to rewrite it once with profanity. There is
-no lottery, cooldown, or stock fallback. The joke shows until your
-next message and is never saved. It never goes in the chat reply.
+**Chat:** Roastline is a sassy best friend on your statusline. On each message you
+send (including one that is just a slash command, such as `/pstack:bro`), the prompt hook
+hands Claude a one-time token and the exact command to run. Claude submits one line
+early in the turn, alongside its first tool call, so it's on your statusline while it
+works, then carries on with the task. It picks the mood that fits: a **roast** when
+you're overcomplicating things, **comfort** when you're stuck or it's a long slog (warm,
+still sassy, never mocking), a **cheer** when something works, or a **joke**. The lines
+are about what's really going on: your prompting, the project, the task or bug, the tech
+stack. If the task drags on, or Claude just fixed something, it can replace the line
+once (for example *"I could've built the Great Wall of China in the time this refactor
+is taking"*, or a cheer); a third submission is refused. Claude skips trivial messages
+("ok", "yes") and anything you've asked for no jokes on. In the NSFW tone every line
+has to swear, comfort included, like a close friend: a clean line is refused with a
+message, doesn't use up the slot, and Claude is told to rewrite it once. There is no
+lottery, cooldown, or stock fallback. The line shows until your next message and is never
+saved. It never goes in the chat reply.
+
+Choose a character with `roastline --character "Tony Stark"`, or add the same option
+to `bash install.sh`. Claude is asked to roleplay that character in companion lines
+across all four moods. Tone is independent, so SFW stays clean and NSFW still requires
+swearing. Use `--character default` to reset. This guides generated lines rather than
+guaranteeing a particular performance; stock and previously saved event jokes remain
+unchanged. The setting survives reinstalls and updates.
 
 **Permissions:** In Claude Code's default mode a command like that would ask you to
 approve it every time, so the installer adds a `PreToolUse` hook (limited to
-`roastline ...` commands). It pre-approves only Roastline's own joke commands, in
+`roastline ...` commands). It pre-approves only Roastline's own message commands, in
 their exact documented shape, and only while they carry a token minted for the
 current turn. Anything else, including any other `roastline` command, goes through
 Claude Code's normal approval, and your own deny and ask rules still apply. Set

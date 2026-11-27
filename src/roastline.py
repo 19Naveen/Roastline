@@ -18,10 +18,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-VERSION = "1.7.2"
+VERSION = "1.8.0"
 TONES = ("sfw", "nsfw")
 DEFAULTS = {
     "tone": "sfw",
+    "character": None,
     "show_roasts": True,
     "rotation_seconds": 30,
     "full_message": "FULL",
@@ -99,6 +100,13 @@ def safe_text(value):
                    and char not in "\u2028\u2029")
 
 
+def valid_character(value):
+    return (value is None or (isinstance(value, str) and value == value.strip()
+            and 1 <= len(value) <= 40 and len(value.split()) <= 5
+            and any(char.isalpha() for char in value)
+            and all(char.isalnum() or char in " .'-" for char in value)))
+
+
 def config_from(path):
     data = read_json(path, 16_384)
     if not isinstance(data, dict):
@@ -108,6 +116,8 @@ def config_from(path):
         config.pop(retired, None)
     if config["tone"] not in TONES:
         raise ValueError("tone must be sfw or nsfw")
+    if not valid_character(config["character"]):
+        raise ValueError("character must be a short name with letters, numbers, spaces or .'-")
     if type(config["show_roasts"]) is not bool or type(config["color"]) is not bool:
         raise ValueError("show_roasts and color must be booleans")
     seconds = config["rotation_seconds"]

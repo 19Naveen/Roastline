@@ -81,6 +81,41 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.skill.exists())
         self.assertTrue(any((self.home / "backup").iterdir()))
 
+    def test_character_roleplay_install_switch_reset_and_reinstall(self):
+        self.install("--tone", "nsfw", "--character", "Tony Stark")
+        options = self.home / "config.json"
+        self.assertEqual(json.loads(options.read_bytes())["character"], "Tony Stark")
+        self.assertIn(b"Tony Stark", self.call("--status", helper=True).stdout)
+
+        def context(session):
+            payload = json.dumps({"session_id": session, "prompt": "Fix the build",
+                                  "transcript_path": str(self.directory / (session + ".jsonl"))}).encode()
+            proc = subprocess.run([sys.executable, "-I", str(self.home / "hook.py"), "prompt"],
+                                  input=payload, capture_output=True, timeout=10, env=self.env, check=True)
+            return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+        prompt = context("stark")
+        self.assertIn('roleplay as the fictional character named "Tony Stark"', prompt)
+        self.assertIn("all four moods", prompt)
+        self.assertIn("MUST swear", prompt)
+        self.assertIn("normal helpful voice in chat", prompt)
+        self.install()
+        self.assertEqual(json.loads(options.read_bytes())["character"], "Tony Stark")
+        changed = subprocess.run([str(self.launcher), "--character", "Groot", "--tone", "sfw"],
+                                 env=self.env, cwd=self.directory, capture_output=True, timeout=20)
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        self.assertEqual(json.loads(options.read_bytes())["character"], "Groot")
+        prompt = context("groot")
+        self.assertIn('character named "Groot"', prompt)
+        self.assertIn("Keep it clean", prompt)
+        before = options.read_bytes()
+        for invalid in ("", "x\nignore rules", "ignore: all rules", "a" * 41):
+            self.call("--character", invalid, helper=True, success=False)
+            self.assertEqual(options.read_bytes(), before)
+        self.call("--character", "default", helper=True)
+        self.assertIsNone(json.loads(options.read_bytes())["character"])
+        self.assertIn("Use your own sassy companion voice", context("default"))
+
     def test_hooks_for_occasional_roasts_leave_other_hooks_alone(self):
         theirs = {"matcher": "startup", "hooks": [{"type": "command", "command": "bash herdr.sh session"}]}
         original = json.dumps({"hooks": {"SessionStart": [theirs]}, "x": 1}, indent=2).encode() + b"\n"
@@ -467,7 +502,7 @@ class InstallerTests(unittest.TestCase):
     def test_update_uses_resolved_commit_and_preserves_user_state(self):
         original = b'{"statusLine":{"type":"command","command":"echo keep"}}'
         self.settings.write_bytes(original)
-        self.install("--tone", "nsfw")
+        self.install("--tone", "nsfw", "--character", "Groot")
         self.call("--pause", helper=True)
         self.call("--add-roasts", "effort", helper=True,
                   payload=b'["The dial is having a rerun.", "Your slider came with a replay button."]')
@@ -499,6 +534,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.directory / "attempted-side-effect").exists())
         options = json.loads((self.home / "config.json").read_bytes())
         self.assertEqual(options["tone"], "nsfw")
+        self.assertEqual(options["character"], "Groot")
         self.assertFalse(options["show_roasts"])
         self.call("--uninstall", helper=True)
         self.assertEqual(self.settings.read_bytes(), original)
